@@ -90,7 +90,7 @@ WTTJ_SEARCH_URL = (
 )
 
 HEADERS = {
-    "User-Agent": "paris-job-newsletter/1.0 (uso personale — contatto: imposta la tua email qui)",
+    "User-Agent": "paris-job-newsletter/1.0 (uso personale, contatto: imposta la tua email qui)",
     "Accept": "application/json, text/html, */*",
     "Accept-Language": "en-US,en;q=0.9",
 }
@@ -317,15 +317,24 @@ def scrape_wttj():
 
     soup = BeautifulSoup(html, "html.parser")
     risultati = []
-    # Selettore indicativo: WTTJ cambia markup spesso, va verificato periodicamente
+    visti = set()
+    # Solo i link che puntano a un SINGOLO ANNUNCIO (contengono '/jobs/'),
+    # non alle pagine profilo azienda (es. /en/companies/acme senza /jobs/).
     for card in soup.select("a[href*='/en/companies/']"):
-        titolo = card.get_text(strip=True)
         href = card.get("href", "")
-        if not titolo or not href:
+        if "/jobs/" not in href:
+            continue  # è un link a un profilo azienda, non a un annuncio
+
+        # Il titolo dell'annuncio è di solito nel primo heading dentro la card,
+        # non nel testo completo del blocco (che include azienda, città, settore).
+        heading = card.select_one("h2, h3, h4, [class*='title']")
+        titolo = heading.get_text(strip=True) if heading else card.get_text(" ", strip=True)[:120]
+
+        if not titolo or href in visti:
             continue
+        visti.add(href)
+
         url = f"https://www.welcometothejungle.com{href}" if href.startswith("/") else href
-        # su WTTJ la location è già filtrata dalla query (Paris/France),
-        # applichiamo comunque il filtro lingua sul titolo come prima passata
         if not is_english(titolo):
             continue
         risultati.append({
