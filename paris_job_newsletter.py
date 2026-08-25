@@ -51,13 +51,29 @@ SEEN_FILE = "seen_jobs.json"
 # Slug Greenhouse: si trova nell'URL della career page, es.
 # https://job-boards.greenhouse.io/mistral -> "mistral"
 GREENHOUSE_SLUGS_MANUALI = [
-    "mistral",
-    # aggiungi qui altri slug man mano che li trovi a mano, se vuoi
+    # NB: alcune aziende (es. BSR) usano il prodotto Greenhouse "Job Boards" più
+    # recente, dove lo slug nell'URL pubblico (job-boards.greenhouse.io/nome) NON
+    # coincide sempre col token richiesto da questa API classica (boards-api...).
+    # Verificato che risponde 200: nessuno slug manuale confermato al momento,
+    # ci si affida all'auto-discovery + a quelli che aggiungi qui dopo averli
+    # testati tu stesso con: curl https://boards-api.greenhouse.io/v1/boards/SLUG/jobs
 ]
 
 # Slug Lever: es. https://jobs.lever.co/payflows -> "payflows"
 LEVER_SLUGS_MANUALI = [
     # "payflows",
+]
+
+# Slug Ashby: es. https://jobs.ashbyhq.com/mistral.ai -> "mistral.ai"
+ASHBY_SLUGS_MANUALI = [
+    "mistral.ai",  # verificato: Mistral AI usa Ashby, non Greenhouse/Lever
+]
+
+# ID azienda SmartRecruiters: es. https://careers.smartrecruiters.com/Bosch -> "Bosch"
+# NB: l'API pubblica è attiva solo per alcune aziende (dipende dal loro piano);
+# quelle senza feed pubblico restituiscono semplicemente 0 risultati, senza errori.
+SMARTRECRUITERS_IDS_MANUALI = [
+    # "NomeAzienda",
 ]
 
 def _carica_slug_scoperti() -> dict:
@@ -70,18 +86,23 @@ def _carica_slug_scoperti() -> dict:
         return {
             "greenhouse": data.get("greenhouse", []),
             "lever": data.get("lever", []),
+            "ashby": data.get("ashby", []),
+            "smartrecruiters": data.get("smartrecruiters", []),
         }
     except FileNotFoundError:
-        return {"greenhouse": [], "lever": []}
+        return {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": []}
     except Exception as e:
         print(f"⚠️  Errore lettura discovered_slugs.json: {e}")
-        return {"greenhouse": [], "lever": []}
+        return {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": []}
 
 _scoperti = _carica_slug_scoperti()
 GREENHOUSE_SLUGS = sorted(set(GREENHOUSE_SLUGS_MANUALI) | set(_scoperti["greenhouse"]))
 LEVER_SLUGS = sorted(set(LEVER_SLUGS_MANUALI) | set(_scoperti["lever"]))
-print(f"📋 Aziende monitorate: {len(GREENHOUSE_SLUGS)} Greenhouse, {len(LEVER_SLUGS)} Lever "
-      f"({len(_scoperti['greenhouse']) + len(_scoperti['lever'])} da auto-discovery)")
+ASHBY_SLUGS = sorted(set(ASHBY_SLUGS_MANUALI) | set(_scoperti["ashby"]))
+SMARTRECRUITERS_IDS = sorted(set(SMARTRECRUITERS_IDS_MANUALI) | set(_scoperti["smartrecruiters"]))
+print(f"📋 Aziende monitorate: {len(GREENHOUSE_SLUGS)} Greenhouse, {len(LEVER_SLUGS)} Lever, "
+      f"{len(ASHBY_SLUGS)} Ashby, {len(SMARTRECRUITERS_IDS)} SmartRecruiters "
+      f"({sum(len(v) for v in _scoperti.values())} da auto-discovery)")
 
 WTTJ_SEARCH_URL = (
     "https://www.welcometothejungle.com/en/jobs"
@@ -281,6 +302,62 @@ def scrape_lever():
     return risultati
 
 # ============================================================
+# 🏢  SCRAPER — Ashby (API JSON pubblica)
+# ============================================================
+
+def scrape_ashby():
+    print("🔍 Ashby...")
+    risultati = []
+    for slug in ASHBY_SLUGS:
+        url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true"
+        r = http_get(url)
+        if not r:
+            continue
+        for job in r.json().get("jobs", []):
+            titolo = job.get("title", "")
+            location = job.get("location", "") or job.get("address", {}).get("postalAddress", {}).get("addressLocality", "")
+            descrizione = job.get("descriptionPlain", "") or job.get("descriptionHtml", "")
+            if not passa_filtri(titolo, location, descrizione):
+                continue
+            risultati.append({
+                "titolo": titolo,
+                "location": location,
+                "url": job.get("jobUrl", "") or job.get("applyUrl", ""),
+                "data": (job.get("publishedAt", "") or "")[:10],
+            })
+        time.sleep(0.5)
+    print(f"   → {len(risultati)} offerte compatibili trovate")
+    return risultati
+
+# ============================================================
+# 🏢  SCRAPER — SmartRecruiters (API JSON pubblica, tier-dipendente)
+# ============================================================
+
+def scrape_smartrecruiters():
+    print("🔍 SmartRecruiters...")
+    risultati = []
+    for company_id in SMARTRECRUITERS_IDS:
+        url = f"https://api.smartrecruiters.com/v1/companies/{company_id}/postings?country=fr&city=Paris"
+        r = http_get(url)
+        if not r:
+            continue  # normale: non tutte le aziende hanno il feed pubblico attivo
+        for job in r.json().get("content", []):
+            titolo = job.get("name", "")
+            location = job.get("location", {}).get("city", "")
+            descrizione = ""  # il dettaglio completo richiede una seconda chiamata per singolo job
+            if not passa_filtri(titolo, location, descrizione):
+                continue
+            risultati.append({
+                "titolo": titolo,
+                "location": location,
+                "url": f"https://jobs.smartrecruiters.com/{company_id}/{job.get('id','')}",
+                "data": (job.get("releasedDate", "") or "")[:10],
+            })
+        time.sleep(0.5)
+    print(f"   → {len(risultati)} offerte compatibili trovate")
+    return risultati
+
+# ============================================================
 # 🏢  SCRAPER 3 — Welcome to the Jungle (HTML + fallback Playwright)
 # ============================================================
 
@@ -318,16 +395,19 @@ def scrape_wttj():
     soup = BeautifulSoup(html, "html.parser")
     risultati = []
     visti = set()
-    # Solo i link che puntano a un SINGOLO ANNUNCIO (contengono '/jobs/'),
-    # non alle pagine profilo azienda (es. /en/companies/acme senza /jobs/).
-    for card in soup.select("a[href*='/en/companies/']"):
+
+    tutti_i_link = soup.select("a[href*='/en/companies/']")
+    link_con_jobs = [c for c in tutti_i_link if "/jobs/" in c.get("href", "")]
+    print(f"   [debug] link totali a /en/companies/: {len(tutti_i_link)} · "
+          f"con /jobs/ nell'URL: {len(link_con_jobs)}")
+
+    scartati_lingua = 0
+    for card in link_con_jobs:
         href = card.get("href", "")
-        if "/jobs/" not in href:
-            continue  # è un link a un profilo azienda, non a un annuncio
 
         # Il titolo dell'annuncio è di solito nel primo heading dentro la card,
         # non nel testo completo del blocco (che include azienda, città, settore).
-        heading = card.select_one("h2, h3, h4, [class*='title']")
+        heading = card.select_one("h2, h3, h4, h5, [class*='title']")
         titolo = heading.get_text(strip=True) if heading else card.get_text(" ", strip=True)[:120]
 
         if not titolo or href in visti:
@@ -336,6 +416,7 @@ def scrape_wttj():
 
         url = f"https://www.welcometothejungle.com{href}" if href.startswith("/") else href
         if not is_english(titolo):
+            scartati_lingua += 1
             continue
         risultati.append({
             "titolo": titolo,
@@ -345,6 +426,7 @@ def scrape_wttj():
         })
         time.sleep(0.2)
 
+    print(f"   [debug] scartati per lingua non-inglese: {scartati_lingua}")
     print(f"   → {len(risultati)} offerte compatibili trovate")
     return risultati
 
@@ -355,6 +437,8 @@ def scrape_wttj():
 FONTE_COLORS = {
     "Greenhouse": ("#0f9d58", "#ffffff"),
     "Lever":      ("#5b6bf5", "#ffffff"),
+    "Ashby":      ("#7c3aed", "#ffffff"),
+    "SmartRecruiters": ("#f26522", "#ffffff"),
     "Welcome to the Jungle": ("#fdc22b", "#1a1a1a"),
 }
 
@@ -477,6 +561,8 @@ def main():
     scrapers = [
         ("Greenhouse", scrape_greenhouse),
         ("Lever", scrape_lever),
+        ("Ashby", scrape_ashby),
+        ("SmartRecruiters", scrape_smartrecruiters),
         ("Welcome to the Jungle", scrape_wttj),
     ]
 
