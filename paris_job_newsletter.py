@@ -134,6 +134,13 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+# WTTJ serve contenuto vuoto/degradato a user-agent non da browser (verificato
+# dal vivo). Usiamo uno UA da browser reale SOLO per il rendering Playwright
+# di quel sito; le API JSON (Greenhouse/Lever/Ashby/SmartRecruiters) restano
+# con HEADERS onesto, non hanno questo problema.
+BROWSER_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
 # Keyword che indicano un requisito HARD di francese -> annuncio scartato
 FRENCH_REQUIRED_KEYWORDS = [
     "french required", "fluent in french", "native french",
@@ -434,7 +441,7 @@ def _wttj_playwright() -> str | None:
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-            ctx = browser.new_context(user_agent=HEADERS["User-Agent"], locale="en-US")
+            ctx = browser.new_context(user_agent=BROWSER_USER_AGENT, locale="en-US")
             page = ctx.new_page()
             page.goto(WTTJ_SEARCH_URL, wait_until="networkidle", timeout=45_000)
             try:
@@ -466,7 +473,7 @@ def scrape_wttj():
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-            page = browser.new_page(user_agent=HEADERS["User-Agent"])
+            page = browser.new_page(user_agent=BROWSER_USER_AGENT)
             for slug in WTTJ_SLUGS:
                 try:
                     page.goto(f"https://www.welcometothejungle.com/en/companies/{slug}",
