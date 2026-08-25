@@ -23,6 +23,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import json, time, re, os, hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     from langdetect import detect, LangDetectException
@@ -54,9 +55,20 @@ GREENHOUSE_SLUGS_MANUALI = [
     # NB: alcune aziende (es. BSR) usano il prodotto Greenhouse "Job Boards" più
     # recente, dove lo slug nell'URL pubblico (job-boards.greenhouse.io/nome) NON
     # coincide sempre col token richiesto da questa API classica (boards-api...).
-    # Verificato che risponde 200: nessuno slug manuale confermato al momento,
-    # ci si affida all'auto-discovery + a quelli che aggiungi qui dopo averli
-    # testati tu stesso con: curl https://boards-api.greenhouse.io/v1/boards/SLUG/jobs
+    # Verificato che risponde 200: se aggiungi altri slug a mano, testali con
+    # curl https://boards-api.greenhouse.io/v1/boards/SLUG/jobs
+    #
+    # Seed presi da career-ops (github.com/santifer/career-ops), un progetto
+    # open-source con lista aziende pre-verificate. Il filtro location per
+    # Parigi resta comunque a livello di singolo annuncio: aggiungere aziende
+    # globali non-francesi è sicuro, i loro annunci non-Parigi vengono
+    # semplicemente scartati da passa_filtri(). Verificati dal vivo (200):
+    "anthropic", "polyai", "parloa", "intercom", "humeai",
+    "airtable", "vercel", "arizeai", "coreweave", "gleanwork",
+    # Seconda ondata, verificata dal vivo (200):
+    "stripe", "gitlab", "cloudflare", "datadog", "discord", "elastic",
+    "grafanalabs", "cockroachlabs", "fastly", "coinbase", "reddit",
+    "robinhood", "affirm", "lyft", "jetbrains", "dialpad", "speechmatics",
 ]
 
 # Slug Lever: es. https://jobs.lever.co/payflows -> "payflows"
@@ -67,6 +79,11 @@ LEVER_SLUGS_MANUALI = [
 # Slug Ashby: es. https://jobs.ashbyhq.com/mistral.ai -> "mistral.ai"
 ASHBY_SLUGS_MANUALI = [
     "mistral.ai",  # verificato: Mistral AI usa Ashby, non Greenhouse/Lever
+    # Seed da career-ops, verificati dal vivo (200):
+    "elevenlabs", "deepgram", "vapi", "bland", "sierra", "decagon",
+    "linear", "supabase", "posthog", "ramp", "modal", "railway",
+    "browserbase", "n8n", "zapier", "attio", "cohere", "pinecone",
+    "talkdesk",
 ]
 
 # ID azienda SmartRecruiters: es. https://careers.smartrecruiters.com/Bosch -> "Bosch"
@@ -88,26 +105,27 @@ def _carica_slug_scoperti() -> dict:
             "lever": data.get("lever", []),
             "ashby": data.get("ashby", []),
             "smartrecruiters": data.get("smartrecruiters", []),
+            "wttj": data.get("wttj", []),
         }
     except FileNotFoundError:
-        return {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": []}
+        return {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": [], "wttj": []}
     except Exception as e:
         print(f"⚠️  Errore lettura discovered_slugs.json: {e}")
-        return {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": []}
+        return {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": [], "wttj": []}
 
 _scoperti = _carica_slug_scoperti()
 GREENHOUSE_SLUGS = sorted(set(GREENHOUSE_SLUGS_MANUALI) | set(_scoperti["greenhouse"]))
 LEVER_SLUGS = sorted(set(LEVER_SLUGS_MANUALI) | set(_scoperti["lever"]))
 ASHBY_SLUGS = sorted(set(ASHBY_SLUGS_MANUALI) | set(_scoperti["ashby"]))
 SMARTRECRUITERS_IDS = sorted(set(SMARTRECRUITERS_IDS_MANUALI) | set(_scoperti["smartrecruiters"]))
+WTTJ_SLUGS = sorted(set(_scoperti.get("wttj", [])))  # solo da auto-discovery, nessun seed manuale
 print(f"📋 Aziende monitorate: {len(GREENHOUSE_SLUGS)} Greenhouse, {len(LEVER_SLUGS)} Lever, "
-      f"{len(ASHBY_SLUGS)} Ashby, {len(SMARTRECRUITERS_IDS)} SmartRecruiters "
+      f"{len(ASHBY_SLUGS)} Ashby, {len(SMARTRECRUITERS_IDS)} SmartRecruiters, {len(WTTJ_SLUGS)} WTTJ "
       f"({sum(len(v) for v in _scoperti.values())} da auto-discovery)")
 
 WTTJ_SEARCH_URL = (
     "https://www.welcometothejungle.com/en/jobs"
-    "?query=&refinementList%5Boffices.country_code%5D%5B%5D=FR"
-    "&refinementList%5Boffices.city%5D%5B%5D=Paris"
+    "?query=&page=1&aroundQuery=Paris"
 )
 
 HEADERS = {
@@ -158,7 +176,9 @@ def is_english(text: str) -> bool:
 
 def is_paris_location(location: str) -> bool:
     loc = (location or "").lower()
-    return "paris" in loc or "france" in loc or "fr" == loc.strip()
+    keyword_parigi = ["paris", "france", "île-de-france", "ile-de-france",
+                       "la défense", "la defense", "neuilly-sur-seine", "boulogne-billancourt"]
+    return any(kw in loc for kw in keyword_parigi) or loc.strip() == "fr"
 
 def requires_french_hard(text: str) -> bool:
     """True solo se il francese è un requisito esplicito e vincolante.
@@ -252,29 +272,45 @@ def slug_a_nome_leggibile(slug: str) -> str:
 # 🏢  SCRAPER 1 — Greenhouse (API JSON pubblica)
 # ============================================================
 
+MAX_WORKER_PARALLELI = 8
+
+def _esegui_in_parallelo(elementi: list, funzione) -> list:
+    """Esegue `funzione(elemento)` per ogni elemento in thread paralleli
+    (ogni chiamata è I/O di rete, non CPU-bound: i thread bastano, niente
+    bisogno di multiprocessing). Appiattisce le liste di risultati."""
+    risultati = []
+    with ThreadPoolExecutor(max_workers=MAX_WORKER_PARALLELI) as executor:
+        futures = [executor.submit(funzione, el) for el in elementi]
+        for future in as_completed(futures):
+            risultati.extend(future.result() or [])
+    return risultati
+
 def scrape_greenhouse():
     print("🔍 Greenhouse...")
-    risultati = []
-    for slug in GREENHOUSE_SLUGS:
+
+    def per_azienda(slug):
         url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
         r = http_get(url)
         if not r:
-            continue
+            return []
         azienda = slug_a_nome_leggibile(slug)
+        offerte = []
         for job in r.json().get("jobs", []):
             titolo = job.get("title", "")
             location = job.get("location", {}).get("name", "")
             descrizione = job.get("content", "")
             if not passa_filtri(titolo, location, descrizione):
                 continue
-            risultati.append({
+            offerte.append({
                 "titolo": titolo,
                 "azienda": azienda,
                 "location": location,
                 "url": job.get("absolute_url", ""),
                 "data": job.get("updated_at", "")[:10],
             })
-        time.sleep(0.5)
+        return offerte
+
+    risultati = _esegui_in_parallelo(GREENHOUSE_SLUGS, per_azienda)
     print(f"   → {len(risultati)} offerte compatibili trovate")
     return risultati
 
@@ -284,13 +320,14 @@ def scrape_greenhouse():
 
 def scrape_lever():
     print("🔍 Lever...")
-    risultati = []
-    for slug in LEVER_SLUGS:
+
+    def per_azienda(slug):
         url = f"https://api.lever.co/v0/postings/{slug}?mode=json"
         r = http_get(url)
         if not r:
-            continue
+            return []
         azienda = slug_a_nome_leggibile(slug)
+        offerte = []
         for job in r.json():
             titolo = job.get("text", "")
             location = (job.get("categories", {}) or {}).get("location", "")
@@ -304,14 +341,16 @@ def scrape_lever():
                     data = datetime.fromtimestamp(int(ts) / 1000).strftime("%Y-%m-%d")
                 except Exception:
                     pass
-            risultati.append({
+            offerte.append({
                 "titolo": titolo,
                 "azienda": azienda,
                 "location": location,
                 "url": job.get("hostedUrl", ""),
                 "data": data,
             })
-        time.sleep(0.5)
+        return offerte
+
+    risultati = _esegui_in_parallelo(LEVER_SLUGS, per_azienda)
     print(f"   → {len(risultati)} offerte compatibili trovate")
     return risultati
 
@@ -321,27 +360,30 @@ def scrape_lever():
 
 def scrape_ashby():
     print("🔍 Ashby...")
-    risultati = []
-    for slug in ASHBY_SLUGS:
+
+    def per_azienda(slug):
         url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true"
         r = http_get(url)
         if not r:
-            continue
+            return []
         azienda = slug_a_nome_leggibile(slug)
+        offerte = []
         for job in r.json().get("jobs", []):
             titolo = job.get("title", "")
             location = job.get("location", "") or job.get("address", {}).get("postalAddress", {}).get("addressLocality", "")
             descrizione = job.get("descriptionPlain", "") or job.get("descriptionHtml", "")
             if not passa_filtri(titolo, location, descrizione):
                 continue
-            risultati.append({
+            offerte.append({
                 "titolo": titolo,
                 "azienda": azienda,
                 "location": location,
                 "url": job.get("jobUrl", "") or job.get("applyUrl", ""),
                 "data": (job.get("publishedAt", "") or "")[:10],
             })
-        time.sleep(0.5)
+        return offerte
+
+    risultati = _esegui_in_parallelo(ASHBY_SLUGS, per_azienda)
     print(f"   → {len(risultati)} offerte compatibili trovate")
     return risultati
 
@@ -351,28 +393,30 @@ def scrape_ashby():
 
 def scrape_smartrecruiters():
     print("🔍 SmartRecruiters...")
-    risultati = []
-    for company_id in SMARTRECRUITERS_IDS:
+
+    def per_azienda(company_id):
         url = f"https://api.smartrecruiters.com/v1/companies/{company_id}/postings?country=fr&city=Paris"
         r = http_get(url)
         if not r:
-            continue  # normale: non tutte le aziende hanno il feed pubblico attivo
+            return []  # normale: non tutte le aziende hanno il feed pubblico attivo
+        offerte = []
         for job in r.json().get("content", []):
             titolo = job.get("name", "")
             location = job.get("location", {}).get("city", "")
-            # l'API restituisce spesso il nome ufficiale dell'azienda nel campo "company"
             azienda = job.get("company", {}).get("name") or slug_a_nome_leggibile(company_id)
             descrizione = ""  # il dettaglio completo richiede una seconda chiamata per singolo job
             if not passa_filtri(titolo, location, descrizione):
                 continue
-            risultati.append({
+            offerte.append({
                 "titolo": titolo,
                 "azienda": azienda,
                 "location": location,
                 "url": f"https://jobs.smartrecruiters.com/{company_id}/{job.get('id','')}",
                 "data": (job.get("releasedDate", "") or "")[:10],
             })
-        time.sleep(0.5)
+        return offerte
+
+    risultati = _esegui_in_parallelo(SMARTRECRUITERS_IDS, per_azienda)
     print(f"   → {len(risultati)} offerte compatibili trovate")
     return risultati
 
@@ -405,54 +449,69 @@ def _wttj_playwright() -> str | None:
         return None
 
 def scrape_wttj():
+    """Scraping WTTJ per singola azienda (pagina profilo), non più via ricerca
+    globale (verificata inaffidabile). Usa gli slug reali raccolti dall'auto-
+    discovery (jobs.stationf.co + pagina companies di WTTJ stessa), verificati
+    dal vivo: struttura [data-testid^='job-thumb-'], titolo=prima riga,
+    location=terza riga del testo della card."""
     print("🔍 Welcome to the Jungle...")
-    html = _wttj_playwright() or _wttj_static()
-    if not html:
-        print("   → nessun contenuto ottenuto")
+    if not PLAYWRIGHT_OK:
+        print("   → Playwright non disponibile, fonte saltata")
+        return []
+    if not WTTJ_SLUGS:
+        print("   → nessuno slug WTTJ disponibile (serve prima far girare l'auto-discovery)")
         return []
 
-    soup = BeautifulSoup(html, "html.parser")
     risultati = []
-    visti = set()
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+            page = browser.new_page(user_agent=HEADERS["User-Agent"])
+            for slug in WTTJ_SLUGS:
+                try:
+                    page.goto(f"https://www.welcometothejungle.com/en/companies/{slug}",
+                               wait_until="networkidle", timeout=30_000)
+                    # Un banner cookie a volte blocca il rendering della lista annunci:
+                    # lo chiudiamo esplicitamente invece di sperare che non appaia.
+                    try:
+                        page.click("text=OK for me", timeout=3000)
+                    except Exception:
+                        try:
+                            page.click("text=No, thanks", timeout=2000)
+                        except Exception:
+                            pass
+                    page.wait_for_timeout(2500)
+                    jobs = page.eval_on_selector_all(
+                        "[data-testid^='job-thumb-']",
+                        "els => els.map(e => ({text: e.innerText, "
+                        "href: e.querySelector('a') ? e.querySelector('a').href : "
+                        "(e.closest('a') ? e.closest('a').href : null)}))"
+                    )
+                except Exception as e:
+                    print(f"    ⚠️  {slug}: {e}")
+                    continue
 
-    tutti_i_link = soup.select("a[href*='/en/companies/']")
-    link_con_jobs = [c for c in tutti_i_link if "/jobs/" in c.get("href", "")]
-    print(f"   [debug] link totali a /en/companies/: {len(tutti_i_link)} · "
-          f"con /jobs/ nell'URL: {len(link_con_jobs)}")
+                azienda = slug_a_nome_leggibile(slug)
+                for job in jobs:
+                    righe = [r.strip() for r in job.get("text", "").split("\n") if r.strip()]
+                    if not righe or not job.get("href"):
+                        continue
+                    titolo = righe[0]
+                    location = righe[2] if len(righe) > 2 else ""
+                    if not passa_filtri(titolo, location, ""):
+                        continue
+                    risultati.append({
+                        "titolo": titolo,
+                        "azienda": azienda,
+                        "location": location,
+                        "url": job["href"],
+                        "data": "",
+                    })
+                time.sleep(0.5)
+            browser.close()
+    except Exception as e:
+        print(f"   ⚠️  Errore generale WTTJ: {e}")
 
-    scartati_lingua = 0
-    for card in link_con_jobs:
-        href = card.get("href", "")
-
-        # Il titolo dell'annuncio è di solito nel primo heading dentro la card,
-        # non nel testo completo del blocco (che include azienda, città, settore).
-        heading = card.select_one("h2, h3, h4, h5, [class*='title']")
-        titolo = heading.get_text(strip=True) if heading else card.get_text(" ", strip=True)[:120]
-
-        if not titolo or href in visti:
-            continue
-        visti.add(href)
-
-        url = f"https://www.welcometothejungle.com{href}" if href.startswith("/") else href
-        if not is_english(titolo):
-            scartati_lingua += 1
-            continue
-
-        # Nome azienda estratto dall'URL stesso (/en/companies/NOME/jobs/...),
-        # più affidabile che affidarsi al markup della card (che cambia spesso).
-        match_azienda = re.search(r"/en/companies/([^/]+)/jobs/", href)
-        azienda = slug_a_nome_leggibile(match_azienda.group(1)) if match_azienda else "N/D"
-
-        risultati.append({
-            "titolo": titolo,
-            "azienda": azienda,
-            "location": "Paris, France",
-            "url": url,
-            "data": "",
-        })
-        time.sleep(0.2)
-
-    print(f"   [debug] scartati per lingua non-inglese: {scartati_lingua}")
     print(f"   → {len(risultati)} offerte compatibili trovate")
     return risultati
 
