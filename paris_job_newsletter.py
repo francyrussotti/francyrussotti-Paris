@@ -239,6 +239,16 @@ def filtra_nuove(azienda: str, offerte: list, seen: set) -> tuple[list, set]:
     return nuove, seen_aggiornato
 
 # ============================================================
+# 🏷️  UTILITY — nome azienda leggibile da uno slug
+# ============================================================
+
+def slug_a_nome_leggibile(slug: str) -> str:
+    """Trasforma uno slug tecnico (es. 'mistral.ai', 'welcome-to-the-jungle')
+    in un nome leggibile (es. 'Mistral Ai', 'Welcome To The Jungle')."""
+    pulito = slug.replace(".", " ").replace("-", " ").replace("_", " ")
+    return pulito.title()
+
+# ============================================================
 # 🏢  SCRAPER 1 — Greenhouse (API JSON pubblica)
 # ============================================================
 
@@ -250,6 +260,7 @@ def scrape_greenhouse():
         r = http_get(url)
         if not r:
             continue
+        azienda = slug_a_nome_leggibile(slug)
         for job in r.json().get("jobs", []):
             titolo = job.get("title", "")
             location = job.get("location", {}).get("name", "")
@@ -258,6 +269,7 @@ def scrape_greenhouse():
                 continue
             risultati.append({
                 "titolo": titolo,
+                "azienda": azienda,
                 "location": location,
                 "url": job.get("absolute_url", ""),
                 "data": job.get("updated_at", "")[:10],
@@ -278,6 +290,7 @@ def scrape_lever():
         r = http_get(url)
         if not r:
             continue
+        azienda = slug_a_nome_leggibile(slug)
         for job in r.json():
             titolo = job.get("text", "")
             location = (job.get("categories", {}) or {}).get("location", "")
@@ -293,6 +306,7 @@ def scrape_lever():
                     pass
             risultati.append({
                 "titolo": titolo,
+                "azienda": azienda,
                 "location": location,
                 "url": job.get("hostedUrl", ""),
                 "data": data,
@@ -313,6 +327,7 @@ def scrape_ashby():
         r = http_get(url)
         if not r:
             continue
+        azienda = slug_a_nome_leggibile(slug)
         for job in r.json().get("jobs", []):
             titolo = job.get("title", "")
             location = job.get("location", "") or job.get("address", {}).get("postalAddress", {}).get("addressLocality", "")
@@ -321,6 +336,7 @@ def scrape_ashby():
                 continue
             risultati.append({
                 "titolo": titolo,
+                "azienda": azienda,
                 "location": location,
                 "url": job.get("jobUrl", "") or job.get("applyUrl", ""),
                 "data": (job.get("publishedAt", "") or "")[:10],
@@ -344,11 +360,14 @@ def scrape_smartrecruiters():
         for job in r.json().get("content", []):
             titolo = job.get("name", "")
             location = job.get("location", {}).get("city", "")
+            # l'API restituisce spesso il nome ufficiale dell'azienda nel campo "company"
+            azienda = job.get("company", {}).get("name") or slug_a_nome_leggibile(company_id)
             descrizione = ""  # il dettaglio completo richiede una seconda chiamata per singolo job
             if not passa_filtri(titolo, location, descrizione):
                 continue
             risultati.append({
                 "titolo": titolo,
+                "azienda": azienda,
                 "location": location,
                 "url": f"https://jobs.smartrecruiters.com/{company_id}/{job.get('id','')}",
                 "data": (job.get("releasedDate", "") or "")[:10],
@@ -418,8 +437,15 @@ def scrape_wttj():
         if not is_english(titolo):
             scartati_lingua += 1
             continue
+
+        # Nome azienda estratto dall'URL stesso (/en/companies/NOME/jobs/...),
+        # più affidabile che affidarsi al markup della card (che cambia spesso).
+        match_azienda = re.search(r"/en/companies/([^/]+)/jobs/", href)
+        azienda = slug_a_nome_leggibile(match_azienda.group(1)) if match_azienda else "N/D"
+
         risultati.append({
             "titolo": titolo,
+            "azienda": azienda,
             "location": "Paris, France",
             "url": url,
             "data": "",
@@ -458,11 +484,13 @@ def genera_html(tutte_nuove: dict, totale_trovate: int):
         bg, fg = FONTE_COLORS.get(fonte, ("#1a1a2e", "#ffffff"))
         righe = ""
         for o in ordina_neutro(offerte):
+            azienda_riga = f'<div style="font-size:13px;font-weight:600;color:#444;margin-bottom:2px;">🏢 {o.get("azienda", "N/D")}</div>'
             loc = f'<span style="color:#888;">📍 {o["location"]}</span>&ensp;' if o.get("location") else ""
             data = f'<span style="color:#aaa;">📅 {o["data"]}</span>' if o.get("data") else ""
             righe += f"""
             <tr>
               <td style="padding:11px 16px;border-bottom:1px solid #f0f0f0;">
+                {azienda_riga}
                 <a href="{o['url']}" style="color:#1a1a2e;font-weight:600;text-decoration:none;
                    font-size:14px;line-height:1.4;display:block;">{o['titolo']}</a>
                 <div style="margin-top:3px;font-size:12px;">{loc}{data}</div>
