@@ -460,7 +460,12 @@ def scrape_wttj():
     globale (verificata inaffidabile). Usa gli slug reali raccolti dall'auto-
     discovery (jobs.stationf.co + pagina companies di WTTJ stessa), verificati
     dal vivo: struttura [data-testid^='job-thumb-'], titolo=prima riga,
-    location=terza riga del testo della card."""
+    location=terza riga del testo della card.
+
+    PRIORITÀ: la mail deve sempre arrivare, con dati completi. Nessun limite
+    di tempo qui: se il sito risponde (anche lento), si aspetta quanto serve.
+    L'unica protezione è contro un blocco vero (troppi fallimenti di fila),
+    perché lì aspettare non aiuta — il sito non risponderà comunque."""
     print("🔍 Welcome to the Jungle...")
     if not PLAYWRIGHT_OK:
         print("   → Playwright non disponibile, fonte saltata")
@@ -469,33 +474,50 @@ def scrape_wttj():
         print("   → nessuno slug WTTJ disponibile (serve prima far girare l'auto-discovery)")
         return []
 
+    slugs_da_processare = WTTJ_SLUGS
+
     risultati = []
+    fallimenti_consecutivi = 0
+    SOGLIA_FALLIMENTI = 15  # se ne accumuliamo tanti di fila, probabile blocco/rate-limit: ci fermiamo
+    aziende_saltate = 0
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
             page = browser.new_page(user_agent=BROWSER_USER_AGENT)
-            for slug in WTTJ_SLUGS:
+            banner_gestito = False
+            for i, slug in enumerate(slugs_da_processare):
+                if fallimenti_consecutivi >= SOGLIA_FALLIMENTI:
+                    aziende_saltate = len(slugs_da_processare) - i
+                    print(f"    ⚠️  {SOGLIA_FALLIMENTI} fallimenti consecutivi — probabile blocco/rate-limit "
+                          f"da parte del sito. Mi fermo qui invece di continuare a sbattere la testa "
+                          f"({aziende_saltate} aziende non controllate in questo run, "
+                          f"verranno riprese al prossimo).")
+                    break
                 try:
                     page.goto(f"https://www.welcometothejungle.com/en/companies/{slug}",
-                               wait_until="networkidle", timeout=30_000)
-                    # Un banner cookie a volte blocca il rendering della lista annunci:
-                    # lo chiudiamo esplicitamente invece di sperare che non appaia.
-                    try:
-                        page.click("text=OK for me", timeout=3000)
-                    except Exception:
+                               wait_until="networkidle", timeout=15_000)  # 15s invece di 30: fallisce prima se il sito è lento
+                    if not banner_gestito:
+                        # Il banner cookie compare solo alla prima visita della sessione;
+                        # una volta chiuso, resta chiuso per il resto del browser.
                         try:
-                            page.click("text=No, thanks", timeout=2000)
+                            page.click("text=OK for me", timeout=3000)
                         except Exception:
-                            pass
-                    page.wait_for_timeout(2500)
+                            try:
+                                page.click("text=No, thanks", timeout=2000)
+                            except Exception:
+                                pass
+                        banner_gestito = True
+                    page.wait_for_timeout(2000)
                     jobs = page.eval_on_selector_all(
                         "[data-testid^='job-thumb-']",
                         "els => els.map(e => ({text: e.innerText, "
                         "href: e.querySelector('a') ? e.querySelector('a').href : "
                         "(e.closest('a') ? e.closest('a').href : null)}))"
                     )
+                    fallimenti_consecutivi = 0  # successo: resetta il contatore
                 except Exception as e:
                     print(f"    ⚠️  {slug}: {e}")
+                    fallimenti_consecutivi += 1
                     continue
 
                 azienda = slug_a_nome_leggibile(slug)
@@ -519,6 +541,9 @@ def scrape_wttj():
     except Exception as e:
         print(f"   ⚠️  Errore generale WTTJ: {e}")
 
+    if aziende_saltate:
+        print(f"   [nota] {aziende_saltate} aziende non controllate in questo run "
+              f"per il circuit breaker — verranno riprese al prossimo run.")
     print(f"   → {len(risultati)} offerte compatibili trovate")
     return risultati
 
