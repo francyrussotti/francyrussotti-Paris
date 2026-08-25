@@ -178,32 +178,49 @@ def verifica_lever(slug: str) -> bool:
     except Exception:
         return False
 
+def verifica_ashby(slug: str) -> bool:
+    try:
+        r = requests.get(
+            f"https://api.ashbyhq.com/posting-api/job-board/{slug}",
+            headers=HEADERS, timeout=8
+        )
+        return r.status_code == 200 and len(r.json().get("jobs", [])) > 0
+    except Exception:
+        return False
+
+def verifica_smartrecruiters(company_id: str) -> bool:
+    try:
+        r = requests.get(
+            f"https://api.smartrecruiters.com/v1/companies/{company_id}/postings",
+            headers=HEADERS, timeout=8
+        )
+        return r.status_code == 200 and r.json().get("totalFound", 0) > 0
+    except Exception:
+        return False
+
 # ------------------------------------------------------------
 # 4) ORCHESTRAZIONE
 # ------------------------------------------------------------
 
 def scopri_slug_validi(nomi_aziende: list[str]) -> dict:
-    greenhouse_trovati = []
-    lever_trovati = []
+    trovati = {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": []}
+    verifiche = {
+        "greenhouse": verifica_greenhouse,
+        "lever": verifica_lever,
+        "ashby": verifica_ashby,
+        "smartrecruiters": verifica_smartrecruiters,
+    }
 
     for nome in nomi_aziende:
-        for slug in genera_varianti_slug(nome):
-            if verifica_greenhouse(slug):
-                print(f"✅ Greenhouse trovato: {nome} -> {slug}")
-                greenhouse_trovati.append(slug)
-                break  # una variante valida basta, passa alla prossima azienda
-            time.sleep(0.3)
-        for slug in genera_varianti_slug(nome):
-            if verifica_lever(slug):
-                print(f"✅ Lever trovato: {nome} -> {slug}")
-                lever_trovati.append(slug)
-                break
-            time.sleep(0.3)
+        for fonte, funzione_verifica in verifiche.items():
+            for slug in genera_varianti_slug(nome):
+                if funzione_verifica(slug):
+                    print(f"✅ {fonte.capitalize()} trovato: {nome} -> {slug}")
+                    trovati[fonte].append(slug)
+                    break  # una variante valida basta, passa alla prossima fonte
+                time.sleep(0.3)
 
-    return {
-        "greenhouse": sorted(set(greenhouse_trovati)),
-        "lever": sorted(set(lever_trovati)),
-    }
+    return {k: sorted(set(v)) for k, v in trovati.items()}
 
 
 def main():
@@ -211,16 +228,18 @@ def main():
     nomi = raccogli_nomi_aziende()
     print(f"   → {len(nomi)} nomi raccolti\n")
 
-    print("🔎 Verifico quali hanno board Greenhouse/Lever attivo...")
+    print("🔎 Verifico quali hanno board Greenhouse/Lever/Ashby/SmartRecruiters attivo...")
     slug_validi = scopri_slug_validi(nomi)
 
     with open("discovered_slugs.json", "w", encoding="utf-8") as f:
         json.dump(slug_validi, f, indent=2, ensure_ascii=False)
 
-    print(f"\n📊 Risultato: {len(slug_validi['greenhouse'])} Greenhouse, "
-          f"{len(slug_validi['lever'])} Lever → salvati in discovered_slugs.json")
-    print("   Copia questi slug in GREENHOUSE_SLUGS / LEVER_SLUGS nello script principale,")
-    print("   oppure fai importare discovered_slugs.json direttamente (vedi nota sotto).")
+    totale = sum(len(v) for v in slug_validi.values())
+    print(f"\n📊 Risultato: {totale} aziende trovate "
+          f"({len(slug_validi['greenhouse'])} Greenhouse, {len(slug_validi['lever'])} Lever, "
+          f"{len(slug_validi['ashby'])} Ashby, {len(slug_validi['smartrecruiters'])} SmartRecruiters) "
+          f"→ salvati in discovered_slugs.json")
+    print("   paris_job_newsletter.py li legge automaticamente, nessuna azione richiesta.")
 
 
 if __name__ == "__main__":
