@@ -16,6 +16,8 @@ import re
 import time
 import json
 import urllib.robotparser
+from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     from playwright.sync_api import sync_playwright
@@ -49,21 +51,84 @@ def path_permesso(base_url: str, path: str) -> bool:
 # ------------------------------------------------------------
 
 def nomi_da_stationf() -> list[str]:
-    """Station F pubblica un elenco di startup ospitate. L'endpoint esatto
-    cambia nel tempo — qui uso la pagina pubblica 'companies' come sorgente
-    HTML; se cambia struttura, va aggiornato il selettore."""
-    if not path_permesso("https://stationf.co", "/companies"):
+    """Il vero job board pubblico di Station F è su jobs.stationf.co/startups
+    (non stationf.co/companies, che non esiste più — 404 verificato).
+    È una SPA: serve Playwright per il rendering. I link hanno il formato
+    jobs.stationf.co/companies/{slug} — estraiamo lo slug direttamente,
+    già molto vicino al formato usato da Greenhouse/Lever/Ashby."""
+    if not path_permesso("https://jobs.stationf.co", "/startups"):
         return []
+    if not PLAYWRIGHT_OK:
+        print("⚠️  Station F richiede Playwright (SPA) — fonte saltata, Playwright non disponibile")
+        return []
+
     nomi = []
     try:
-        r = requests.get("https://stationf.co/companies", headers=HEADERS, timeout=15)
-        r.raise_for_status()
-        # Estrazione grezza di nomi da eventuale JSON embeddato nella pagina
-        # (molte SPA moderne includono i dati in un tag <script id="__NEXT_DATA__">)
-        nomi = re.findall(r'"name":"([^"]{2,60})"', r.text)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+            page = browser.new_page(user_agent=HEADERS["User-Agent"])
+            page.goto("https://jobs.stationf.co/startups", wait_until="networkidle", timeout=45_000)
+            page.wait_for_timeout(4000)
+            links = page.eval_on_selector_all("a", "els => els.map(e => e.href).filter(h => h)")
+            browser.close()
+        slugs = re.findall(r"jobs\.stationf\.co/companies/([a-z0-9-]+)", " ".join(links))
+        # Gli slug sono già nel formato giusto: li trasformiamo in "nomi" con spazi
+        # al posto dei trattini, così passano nella stessa pipeline delle altre fonti.
+        nomi = [s.replace("-", " ") for s in slugs]
     except Exception as e:
         print(f"⚠️  Station F non raggiungibile: {e}")
     return list(dict.fromkeys(nomi))  # dedup mantenendo l'ordine
+
+
+# Slug WTTJ grezzi raccolti durante la discovery (usati direttamente per lo
+# scraping annunci, popolati come side-effect da nomi_da_wttj_companies).
+WTTJ_SLUGS_RACCOLTI = []
+
+def nomi_da_wttj_companies() -> list[str]:
+    """Pagina 'companies' di Welcome to the Jungle filtrata per area di Parigi
+    (raggio 20km da Notre-Dame), verificata dal vivo: ~2.914 aziende totali,
+    31 per pagina. A differenza della ricerca annunci (/en/jobs), questa
+    pagina RENDE davvero i risultati lato server/client in modo scrapabile.
+    Limitiamo a poche pagine per run per restare leggeri con Playwright.
+
+    Effetto collaterale: salva anche gli slug grezzi (non convertiti in nomi)
+    in WTTJ_SLUGS_RACCOLTI, usati direttamente per lo scraping annunci WTTJ
+    (verificato: la pagina profilo /en/companies/{slug} mostra gli annunci
+    reali via [data-testid^='job-thumb-'])."""
+    if not PLAYWRIGHT_OK:
+        print("⚠️  WTTJ companies richiede Playwright — fonte saltata")
+        return []
+    if not path_permesso("https://www.welcometothejungle.com", "/en/companies"):
+        return []
+
+    MAX_PAGINE = 15  # ~465 aziende a run (grazie alla cache, quelle già verificate non si riverificano)
+    nomi = []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+            page = browser.new_page(user_agent=HEADERS["User-Agent"])
+            for num_pagina in range(1, MAX_PAGINE + 1):
+                url = (
+                    "https://www.welcometothejungle.com/en/companies"
+                    f"?page={num_pagina}"
+                    "&aroundQuery=Paris%2C%20Paris%2C%20%C3%8Ele-de-France%20Region%2C%20France"
+                    "&aroundLatLng=48.85341%2C2.3488&aroundRadius=20000&query="
+                )
+                page.goto(url, wait_until="networkidle", timeout=45_000)
+                page.wait_for_timeout(2500)
+                links = page.eval_on_selector_all(
+                    "a[href*='/en/companies/']", "els => els.map(e => e.href)"
+                )
+                slugs = re.findall(r"/en/companies/([a-z0-9-]+)$", " ".join(links))
+                if not slugs:
+                    break  # pagina vuota, fine risultati
+                WTTJ_SLUGS_RACCOLTI.extend(slugs)  # slug grezzi, per lo scraping diretto
+                nomi.extend(s.replace("-", " ") for s in slugs)
+                time.sleep(1)
+            browser.close()
+    except Exception as e:
+        print(f"⚠️  WTTJ companies non raggiungibile: {e}")
+    return list(dict.fromkeys(nomi))
 
 
 def nomi_da_startupmap() -> list[str]:
@@ -100,20 +165,25 @@ def nomi_da_startupmap() -> list[str]:
 
 
 def nomi_da_ycombinator() -> list[str]:
-    """YC pubblica un'API di ricerca sul suo sito (usata dal loro stesso
-    frontend). Filtriamo per location contenente 'Paris' o 'France'."""
+    """Usa yc-oss/api (github.com/yc-oss/api): un progetto open-source che
+    pubblica un export JSON statico e aggiornato quotidianamente della
+    directory YC via GitHub Pages — niente scraping, niente reverse
+    engineering di Algolia, nessun rischio ToS. Filtriamo lato nostro
+    sul campo 'locations' per Francia/Paris tra le aziende che assumono."""
     nomi = []
     try:
-        url = "https://www.ycombinator.com/companies/api/companies?query=&batch=&location=France"
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        if r.status_code == 200:
-            data = r.json()
-            for c in data if isinstance(data, list) else data.get("companies", []):
+        url = "https://yc-oss.github.io/api/companies/hiring.json"
+        r = requests.get(url, headers=HEADERS, timeout=20)
+        r.raise_for_status()
+        aziende = r.json()
+        for c in aziende:
+            locations = " ".join(c.get("locations", []) or []) + " " + " ".join(c.get("regions", []) or [])
+            if "france" in locations.lower() or "paris" in locations.lower():
                 nome = c.get("name")
                 if nome:
                     nomi.append(nome)
     except Exception as e:
-        print(f"⚠️  YC directory non raggiungibile o formato cambiato: {e}")
+        print(f"⚠️  yc-oss/api non raggiungibile o formato cambiato: {e}")
     return nomi
 
 
@@ -127,6 +197,8 @@ def nomi_manuali_fallback() -> list[str]:
 def raccogli_nomi_aziende() -> list[str]:
     tutti = []
     tutti += nomi_da_stationf()
+    time.sleep(1)
+    tutti += nomi_da_wttj_companies()
     time.sleep(1)
     tutti += nomi_da_startupmap()
     time.sleep(1)
@@ -202,8 +274,47 @@ def verifica_smartrecruiters(company_id: str) -> bool:
 # 4) ORCHESTRAZIONE
 # ------------------------------------------------------------
 
+CACHE_FILE = "discovery_cache.json"
+GIORNI_RICONTROLLO = 30  # dopo quanto tempo riverificare un nome già scartato
+MAX_WORKER_PARALLELI = 8
+
+def carica_cache() -> dict:
+    """Cache di ciò che è già stato verificato: nome azienda -> quando
+    controllato + cosa trovato per ogni fonte (None se non trovato).
+    Evita di riverificare centinaia di nomi ogni settimana, e soprattutto
+    evita di PERDERE aziende valide se una fonte quella settimana
+    restituisce meno nomi del solito (i risultati buoni si accumulano)."""
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"⚠️  Errore lettura {CACHE_FILE}: {e}")
+        return {}
+
+def salva_cache(cache: dict):
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"⚠️  Errore scrittura {CACHE_FILE}: {e}")
+
+def _verifica_nome_su_tutte_le_fonti(nome: str, verifiche: dict) -> tuple[str, dict]:
+    """Verifica un singolo nome su tutte e 4 le piattaforme. Girato in
+    thread paralleli per accelerare (ogni chiamata è I/O di rete)."""
+    risultato = {}
+    for fonte, funzione_verifica in verifiche.items():
+        trovato = None
+        for slug in genera_varianti_slug(nome):
+            if funzione_verifica(slug):
+                trovato = slug
+                break
+            time.sleep(0.2)
+        risultato[fonte] = trovato
+    return nome, risultato
+
 def scopri_slug_validi(nomi_aziende: list[str]) -> dict:
-    trovati = {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": []}
     verifiche = {
         "greenhouse": verifica_greenhouse,
         "lever": verifica_lever,
@@ -211,14 +322,45 @@ def scopri_slug_validi(nomi_aziende: list[str]) -> dict:
         "smartrecruiters": verifica_smartrecruiters,
     }
 
+    cache = carica_cache()
+    oggi = datetime.now()
+    da_verificare = []
+
     for nome in nomi_aziende:
-        for fonte, funzione_verifica in verifiche.items():
-            for slug in genera_varianti_slug(nome):
-                if funzione_verifica(slug):
-                    print(f"✅ {fonte.capitalize()} trovato: {nome} -> {slug}")
-                    trovati[fonte].append(slug)
-                    break  # una variante valida basta, passa alla prossima fonte
-                time.sleep(0.3)
+        voce = cache.get(nome)
+        if voce:
+            ultimo_controllo = datetime.fromisoformat(voce["ultimo_controllo"])
+            gia_trovato_da_qualche_parte = any(voce["fonti"].values())
+            # Rivorifichiamo solo se: non trovato da nessuna parte E sono passati
+            # abbastanza giorni (magari nel frattempo hanno aperto un board).
+            # Se già trovato, il dato resta valido: non serve ricontrollare.
+            if gia_trovato_da_qualche_parte or (oggi - ultimo_controllo) < timedelta(days=GIORNI_RICONTROLLO):
+                continue
+        da_verificare.append(nome)
+
+    print(f"   → {len(nomi_aziende) - len(da_verificare)} nomi già in cache (saltati), "
+          f"{len(da_verificare)} da verificare ora")
+
+    if da_verificare:
+        with ThreadPoolExecutor(max_workers=MAX_WORKER_PARALLELI) as executor:
+            futures = [executor.submit(_verifica_nome_su_tutte_le_fonti, nome, verifiche) for nome in da_verificare]
+            for future in as_completed(futures):
+                nome, risultato = future.result()
+                cache[nome] = {"ultimo_controllo": oggi.isoformat(), "fonti": risultato}
+                for fonte, slug in risultato.items():
+                    if slug:
+                        print(f"✅ {fonte.capitalize()} trovato: {nome} -> {slug}")
+
+    salva_cache(cache)
+
+    # Il risultato finale è l'accumulo di TUTTO ciò che la cache ha mai trovato,
+    # non solo i nomi di questa run: così un'azienda trovata mesi fa resta
+    # nell'elenco anche se questa settimana le fonti dinamiche non la ripescano.
+    trovati = {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": []}
+    for voce in cache.values():
+        for fonte, slug in voce["fonti"].items():
+            if slug:
+                trovati[fonte].append(slug)
 
     return {k: sorted(set(v)) for k, v in trovati.items()}
 
@@ -231,14 +373,24 @@ def main():
     print("🔎 Verifico quali hanno board Greenhouse/Lever/Ashby/SmartRecruiters attivo...")
     slug_validi = scopri_slug_validi(nomi)
 
+    # Slug WTTJ grezzi: non serve verifica extra, sono già confermati esistere
+    # (raccolti dalla pagina companies reale). Uniti a quelli già in cache.
+    wttj_pregressi = set()
+    try:
+        with open("discovered_slugs.json", "r", encoding="utf-8") as f:
+            wttj_pregressi = set(json.load(f).get("wttj", []))
+    except Exception:
+        pass
+    slug_validi["wttj"] = sorted(wttj_pregressi | set(WTTJ_SLUGS_RACCOLTI))
+
     with open("discovered_slugs.json", "w", encoding="utf-8") as f:
         json.dump(slug_validi, f, indent=2, ensure_ascii=False)
 
     totale = sum(len(v) for v in slug_validi.values())
     print(f"\n📊 Risultato: {totale} aziende trovate "
           f"({len(slug_validi['greenhouse'])} Greenhouse, {len(slug_validi['lever'])} Lever, "
-          f"{len(slug_validi['ashby'])} Ashby, {len(slug_validi['smartrecruiters'])} SmartRecruiters) "
-          f"→ salvati in discovered_slugs.json")
+          f"{len(slug_validi['ashby'])} Ashby, {len(slug_validi['smartrecruiters'])} SmartRecruiters, "
+          f"{len(slug_validi['wttj'])} WTTJ) → salvati in discovered_slugs.json")
     print("   paris_job_newsletter.py li legge automaticamente, nessuna azione richiesta.")
 
 
