@@ -2,7 +2,7 @@ name: 🗼 Paris Job Newsletter
 
 on:
   schedule:
-    - cron: "0 7 * * *"   # ogni giorno alle 07:00 UTC (~08:00/09:00 ora di Parigi)
+    - cron: "0 6 * * *"   # ogni giorno alle 07:00 UTC (~08:00/09:00 ora di Parigi)
   workflow_dispatch:        # permette anche l'avvio manuale da GitHub
 
 permissions:
@@ -11,6 +11,10 @@ permissions:
 jobs:
   newsletter:
     runs-on: ubuntu-latest
+    timeout-minutes: 45  # sicurezza: se qualcosa si blocca (es. WTTJ rate-limited),
+                         # GitHub interrompe la run invece di lasciarla girare per ore.
+                         # Il circuit breaker nel codice dovrebbe già fermarsi prima,
+                         # questo è solo un secondo livello di protezione.
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
