@@ -28,6 +28,12 @@ except ImportError:
 
 HEADERS = {"User-Agent": "paris-job-newsletter-discovery/1.0 (uso personale)"}
 
+# Alcuni siti (WTTJ) servono contenuto vuoto/degradato a user-agent non da browser.
+# Usiamo uno UA da browser reale SOLO per il rendering Playwright di quel sito;
+# le chiamate HTTP dirette (Station F, YC, robots.txt) restano con HEADERS onesto.
+BROWSER_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
 # ------------------------------------------------------------
 # 0) CONTROLLO ROBOTS.TXT — verifica live prima di ogni scraping HTML.
 #    Se il sito vieta l'accesso al path che vogliamo leggere, la fonte
@@ -106,7 +112,7 @@ def nomi_da_wttj_companies() -> list[str]:
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-            page = browser.new_page(user_agent=HEADERS["User-Agent"])
+            page = browser.new_page(user_agent=BROWSER_USER_AGENT)  # UA da browser reale, vedi nota sopra
             for num_pagina in range(1, MAX_PAGINE + 1):
                 url = (
                     "https://www.welcometothejungle.com/en/companies"
@@ -115,11 +121,26 @@ def nomi_da_wttj_companies() -> list[str]:
                     "&aroundLatLng=48.85341%2C2.3488&aroundRadius=20000&query="
                 )
                 page.goto(url, wait_until="networkidle", timeout=45_000)
+                # Banner cookie: se compare, blocca il rendering della lista aziende.
+                try:
+                    page.click("text=OK for me", timeout=3000)
+                except Exception:
+                    try:
+                        page.click("text=No, thanks", timeout=2000)
+                    except Exception:
+                        pass
                 page.wait_for_timeout(2500)
                 links = page.eval_on_selector_all(
                     "a[href*='/en/companies/']", "els => els.map(e => e.href)"
                 )
-                slugs = re.findall(r"/en/companies/([a-z0-9-]+)$", " ".join(links))
+                # Estrazione PER SINGOLO link, non su stringa unita: con re.findall
+                # su una stringa concatenata, '$' ancora solo alla fine di TUTTA
+                # la stringa e trova solo l'ultimo match, non uno per link.
+                slugs = []
+                for href in links:
+                    m = re.search(r"/en/companies/([a-z0-9-]+)$", href)
+                    if m:
+                        slugs.append(m.group(1))
                 if not slugs:
                     break  # pagina vuota, fine risultati
                 WTTJ_SLUGS_RACCOLTI.extend(slugs)  # slug grezzi, per lo scraping diretto
@@ -151,7 +172,7 @@ def nomi_da_startupmap() -> list[str]:
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-            ctx = browser.new_context(user_agent=HEADERS["User-Agent"], locale="en-US")
+            ctx = browser.new_context(user_agent=BROWSER_USER_AGENT, locale="en-US")
             page = ctx.new_page()
             # Filtro città Paris via query param, se supportato dal sito
             page.goto("https://startupmap.one/?city=Paris", wait_until="networkidle", timeout=45_000)
