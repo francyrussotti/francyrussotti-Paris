@@ -1,13 +1,67 @@
 {
-  "greenhouse": [],
+  "greenhouse": [
+    "algolia",
+    "forward",
+    "gravity",
+    "interstellarlab",
+    "pronto",
+    "quantiq",
+    "recast",
+    "sleepdoctor"
+  ],
   "lever": [
-    "qonto",
-    "swile"
+    "bigblue",
+    "kickmaker",
+    "metr",
+    "playplay",
+    "quantiq",
+    "sesame"
   ],
   "ashby": [
-    "alan",
-    "pennylane",
-    "qonto"
+    "amplify",
+    "beavr",
+    "ben",
+    "bruno",
+    "bubble",
+    "cryptio",
+    "cube",
+    "escape",
+    "formance",
+    "gravity",
+    "hiya",
+    "joko",
+    "lemrock",
+    "lucis",
+    "monk",
+    "omni",
+    "orbital",
+    "savvy",
+    "sesame",
+    "tailor",
+    "tilt",
+    "twenty",
+    "vasco"
   ],
-  "smartrecruiters": []
+  "smartrecruiters": [
+    "1978",
+    "1990",
+    "19901",
+    "50intech",
+    "actiondesk",
+    "cegid",
+    "ecolem",
+    "forward",
+    "happypal",
+    "karamel",
+    "kazidomi",
+    "kickmaker",
+    "mooveo",
+    "noota",
+    "onboard1",
+    "penritheducation",
+    "rentech",
+    "targo",
+    "tarmactechnologies"
+  ],
+  "wttj": []
 }
