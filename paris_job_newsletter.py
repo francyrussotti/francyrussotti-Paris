@@ -173,13 +173,37 @@ def http_get(url, **kw):
 
 def is_english(text: str) -> bool:
     """Rileva se il testo è in inglese. Se langdetect non è disponibile,
-    non blocca nulla (fail-open) per non perdere annunci per un problema tecnico."""
+    non blocca nulla (fail-open) per non perdere annunci per un problema tecnico.
+
+    Su testi corti (es. solo il titolo, senza descrizione — capita per WTTJ e
+    in parte SmartRecruiters) langdetect è inaffidabile e può classificare
+    erroneamente titoli francesi come inglese. Aggiungiamo un controllo
+    euristico su segnali francesi molto specifici come rete di sicurezza
+    aggiuntiva quando il testo è corto."""
     if not LANGDETECT_OK:
         return True
+    if ha_segnali_francesi_forti(text):
+        return False
     try:
         return detect(text[:1500]) == "en"
     except LangDetectException:
         return False
+
+# Caratteri accentati che compaiono quasi solo in francese (non in inglese) e
+# parole funzionali francesi molto comuni, usate come segnale forte anche su
+# testi brevi dove langdetect da solo è inaffidabile (es. titoli senza descrizione).
+_ACCENTI_FRANCESI = set("éèêëàâäùûüçîï")
+_PAROLE_FUNZIONALI_FRANCESI = {
+    " de ", " des ", " du ", " le ", " la ", " les ", " et ", " pour ", " avec ",
+    " chargé", "chargée", "responsable de", "assistant(e)", "alternance",
+    "stagiaire", "confirmé", "confirmée", "h/f", "f/h",
+}
+
+def ha_segnali_francesi_forti(text: str) -> bool:
+    testo = f" {(text or '').lower()} "
+    if any(c in testo for c in _ACCENTI_FRANCESI):
+        return True
+    return any(parola in testo for parola in _PAROLE_FUNZIONALI_FRANCESI)
 
 def is_paris_location(location: str) -> bool:
     loc = (location or "").lower()
@@ -411,7 +435,22 @@ def scrape_smartrecruiters():
             titolo = job.get("name", "")
             location = job.get("location", {}).get("city", "")
             azienda = job.get("company", {}).get("name") or slug_a_nome_leggibile(company_id)
-            descrizione = ""  # il dettaglio completo richiede una seconda chiamata per singolo job
+
+            # SmartRecruiters dichiara esplicitamente la lingua dell'annuncio nel
+            # dettaglio (campo "language") — molto più affidabile di langdetect
+            # su una descrizione vuota, che causava falsi positivi in francese.
+            job_id = job.get("id", "")
+            descrizione = ""
+            lingua_dichiarata = None
+            dettaglio = http_get(f"https://api.smartrecruiters.com/v1/companies/{company_id}/postings/{job_id}")
+            if dettaglio:
+                d = dettaglio.json()
+                lingua_dichiarata = (d.get("language") or {}).get("code")
+                sezioni = (d.get("jobAd") or {}).get("sections", {})
+                descrizione = " ".join(s.get("text", "") for s in sezioni.values())
+
+            if lingua_dichiarata and lingua_dichiarata != "en":
+                continue  # lingua esplicitamente dichiarata non-inglese: scarta senza ambiguità
             if not passa_filtri(titolo, location, descrizione):
                 continue
             offerte.append({
@@ -549,6 +588,20 @@ def scrape_wttj():
 
 # ============================================================
 # 📧  GENERAZIONE EMAIL — neutra, nessuno scoring, per fonte
+# Keyword dei job title emersi dal percorso di orientamento professionale
+# ([[orientamento-professionale]]): usate SOLO per mostrare un badge informativo
+# nella mail, mai per filtrare, ordinare o dare priorità — resta una lista
+# neutra, la valutazione dell'azienda resta libera come richiesto.
+JOB_TITLE_KEYWORDS = [
+    "customer success", "growth", "business development", "partnerships",
+    "operations associate", "no-code", "nocode", "product operations",
+    "sales engineer", "solutions associate", "solutions engineer",
+]
+
+def matcha_job_title_target(titolo: str) -> bool:
+    t = (titolo or "").lower()
+    return any(kw in t for kw in JOB_TITLE_KEYWORDS)
+
 # ============================================================
 
 FONTE_COLORS = {
@@ -578,12 +631,18 @@ def genera_html(tutte_nuove: dict, totale_trovate: int):
             azienda_riga = f'<div style="font-size:13px;font-weight:600;color:#444;margin-bottom:2px;">🏢 {o.get("azienda", "N/D")}</div>'
             loc = f'<span style="color:#888;">📍 {o["location"]}</span>&ensp;' if o.get("location") else ""
             data = f'<span style="color:#aaa;">📅 {o["data"]}</span>' if o.get("data") else ""
+            # Badge puramente informativo, nessun impatto su ordinamento o filtro:
+            # segnala solo che il titolo si avvicina ai job title emersi dal
+            # percorso di orientamento, la valutazione resta all'utente.
+            badge = ('<span style="background:#e0e7ff;color:#3730a3;font-size:10px;'
+                     'font-weight:700;padding:2px 6px;border-radius:4px;margin-left:6px;">'
+                     '🎯 ruolo target</span>') if matcha_job_title_target(o.get("titolo", "")) else ""
             righe += f"""
             <tr>
               <td style="padding:11px 16px;border-bottom:1px solid #f0f0f0;">
                 {azienda_riga}
                 <a href="{o['url']}" style="color:#1a1a2e;font-weight:600;text-decoration:none;
-                   font-size:14px;line-height:1.4;display:block;">{o['titolo']}</a>
+                   font-size:14px;line-height:1.4;display:block;">{o['titolo']}{badge}</a>
                 <div style="margin-top:3px;font-size:12px;">{loc}{data}</div>
               </td>
             </tr>"""
@@ -661,10 +720,47 @@ def invia_email(html_body, totale):
 # 🩺  HEALTH CHECK — rileva scraper rotti (0 risultati anomalo)
 # ============================================================
 
+STATS_FILE = "stats_storico.json"
+GIORNI_STORICO_MEDIA = 14  # quanti giorni indietro guardare per calcolare la "media normale"
+
+def carica_storico() -> list:
+    try:
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        print(f"⚠️  Errore lettura {STATS_FILE}: {e}")
+        return []
+
+def salva_storico(storico: list):
+    # Teniamo solo gli ultimi 90 giorni per non far crescere il file all'infinito
+    storico = storico[-90:]
+    try:
+        with open(STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(storico, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"⚠️  Errore scrittura {STATS_FILE}: {e}")
+
+def media_storica_per_fonte(storico: list, nome_fonte: str) -> float | None:
+    """Media dei risultati trovati per questa fonte negli ultimi N giorni
+    (esclude il giorno corrente, che non è ancora nello storico)."""
+    recenti = storico[-GIORNI_STORICO_MEDIA:]
+    valori = [g["fonti"].get(nome_fonte, 0) for g in recenti if nome_fonte in g.get("fonti", {})]
+    if not valori:
+        return None
+    return sum(valori) / len(valori)
+
 def health_check(nome_fonte: str, risultati: int, storico_medio: float | None = None):
     if risultati == 0 and storico_medio and storico_medio > 1:
-        print(f"⚠️  ALERT: {nome_fonte} ha trovato 0 risultati (media storica ~{storico_medio:.1f}). "
-              f"Probabile rottura selettori/API — verificare manualmente.")
+        print(f"⚠️  ALERT: {nome_fonte} ha trovato 0 risultati (media storica ~{storico_medio:.1f} "
+              f"negli ultimi {GIORNI_STORICO_MEDIA} giorni). Probabile rottura selettori/API "
+              f"— verificare manualmente.")
+    elif storico_medio and storico_medio > 3 and risultati < storico_medio * 0.3:
+        # Calo forte (sotto il 30% della media) ma non a zero: segnale più debole,
+        # comunque utile da vedere nel log invece di passare inosservato.
+        print(f"⚠️  Nota: {nome_fonte} ha trovato solo {risultati} risultati, "
+              f"ben sotto la media storica (~{storico_medio:.1f}). Da tenere d'occhio.")
 
 # ============================================================
 # 🚀  MAIN
@@ -676,6 +772,7 @@ def main():
     print(f"{'='*55}\n")
 
     seen = carica_seen()
+    storico = carica_storico()
 
     scrapers = [
         ("Greenhouse", scrape_greenhouse),
@@ -692,7 +789,8 @@ def main():
         try:
             offerte = fn()
             tutte_trovate[nome] = offerte
-            health_check(nome, len(offerte))
+            media = media_storica_per_fonte(storico, nome)
+            health_check(nome, len(offerte), media)
             if offerte:
                 nuove, seen = filtra_nuove(nome, offerte, seen)
                 if nuove:
@@ -703,6 +801,13 @@ def main():
         time.sleep(1)
 
     salva_seen(seen)
+
+    # Aggiungiamo la riga di oggi allo storico, per i confronti dei prossimi giorni
+    storico.append({
+        "data": datetime.now().strftime("%Y-%m-%d"),
+        "fonti": {nome: len(tutte_trovate.get(nome, [])) for nome, _ in scrapers},
+    })
+    salva_storico(storico)
 
     totale_trovate = sum(len(v) for v in tutte_trovate.values())
     totale_nuove = sum(len(v) for v in tutte_nuove.values())
