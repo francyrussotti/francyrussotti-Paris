@@ -15721,5 +15721,50 @@
       "ashby": null,
       "smartrecruiters": null
     }
+  },
+  "zenika": {
+    "ultimo_controllo": "2026-09-04T09:15:18.015604",
+    "fonti": {
+      "greenhouse": null,
+      "lever": null,
+      "ashby": null,
+      "smartrecruiters": "zenika"
+    }
+  },
+  "upshow": {
+    "ultimo_controllo": "2026-09-04T09:15:18.015604",
+    "fonti": {
+      "greenhouse": null,
+      "lever": null,
+      "ashby": null,
+      "smartrecruiters": null
+    }
+  },
+  "eukonomy": {
+    "ultimo_controllo": "2026-09-04T09:15:18.015604",
+    "fonti": {
+      "greenhouse": null,
+      "lever": null,
+      "ashby": null,
+      "smartrecruiters": null
+    }
+  },
+  "innovela": {
+    "ultimo_controllo": "2026-09-04T09:15:18.015604",
+    "fonti": {
+      "greenhouse": null,
+      "lever": null,
+      "ashby": null,
+      "smartrecruiters": null
+    }
+  },
+  "editions gallmeister": {
+    "ultimo_controllo": "2026-09-04T09:15:18.015604",
+    "fonti": {
+      "greenhouse": null,
+      "lever": null,
+      "ashby": null,
+      "smartrecruiters": null
+    }
   }
 }
