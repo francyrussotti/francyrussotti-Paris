@@ -15732,7 +15732,7 @@
     }
   },
   "upshow": {
-    "ultimo_controllo": "2026-09-04T09:15:18.015604",
+    "ultimo_controllo": "2026-10-05T12:00:39.676620",
     "fonti": {
       "greenhouse": null,
       "lever": null,
@@ -15741,7 +15741,7 @@
     }
   },
   "eukonomy": {
-    "ultimo_controllo": "2026-09-04T09:15:18.015604",
+    "ultimo_controllo": "2026-10-05T12:00:39.676620",
     "fonti": {
       "greenhouse": null,
       "lever": null,
@@ -15750,7 +15750,7 @@
     }
   },
   "innovela": {
-    "ultimo_controllo": "2026-09-04T09:15:18.015604",
+    "ultimo_controllo": "2026-10-05T12:00:39.676620",
     "fonti": {
       "greenhouse": null,
       "lever": null,
@@ -15759,7 +15759,7 @@
     }
   },
   "editions gallmeister": {
-    "ultimo_controllo": "2026-09-04T09:15:18.015604",
+    "ultimo_controllo": "2026-10-05T12:00:39.676620",
     "fonti": {
       "greenhouse": null,
       "lever": null,
@@ -16147,6 +16147,33 @@
   },
   "alten 1": {
     "ultimo_controllo": "2026-10-02T10:51:36.354273",
+    "fonti": {
+      "greenhouse": null,
+      "lever": null,
+      "ashby": null,
+      "smartrecruiters": null
+    }
+  },
+  "fixology": {
+    "ultimo_controllo": "2026-10-05T12:00:39.676620",
+    "fonti": {
+      "greenhouse": null,
+      "lever": null,
+      "ashby": null,
+      "smartrecruiters": null
+    }
+  },
+  "qivia": {
+    "ultimo_controllo": "2026-10-05T12:00:39.676620",
+    "fonti": {
+      "greenhouse": null,
+      "lever": null,
+      "ashby": null,
+      "smartrecruiters": null
+    }
+  },
+  "expat u": {
+    "ultimo_controllo": "2026-10-05T12:00:39.676620",
     "fonti": {
       "greenhouse": null,
       "lever": null,
