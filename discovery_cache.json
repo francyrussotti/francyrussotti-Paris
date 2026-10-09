@@ -15804,7 +15804,7 @@
     }
   },
   "leasecom": {
-    "ultimo_controllo": "2026-09-09T09:21:52.995111",
+    "ultimo_controllo": "2026-10-09T11:37:50.769287",
     "fonti": {
       "greenhouse": null,
       "lever": null,
@@ -15813,7 +15813,7 @@
     }
   },
   "fieldreason": {
-    "ultimo_controllo": "2026-09-09T09:21:52.995111",
+    "ultimo_controllo": "2026-10-09T11:37:50.769287",
     "fonti": {
       "greenhouse": null,
       "lever": null,
@@ -15822,7 +15822,7 @@
     }
   },
   "direction de l immobilier de l etat": {
-    "ultimo_controllo": "2026-09-09T09:21:52.995111",
+    "ultimo_controllo": "2026-10-09T11:37:50.769287",
     "fonti": {
       "greenhouse": null,
       "lever": null,
@@ -16237,6 +16237,24 @@
   },
   "exotrail 1": {
     "ultimo_controllo": "2026-10-07T11:29:36.176000",
+    "fonti": {
+      "greenhouse": null,
+      "lever": null,
+      "ashby": null,
+      "smartrecruiters": null
+    }
+  },
+  "patrimy": {
+    "ultimo_controllo": "2026-10-09T11:37:50.769287",
+    "fonti": {
+      "greenhouse": null,
+      "lever": null,
+      "ashby": null,
+      "smartrecruiters": null
+    }
+  },
+  "tango 1": {
+    "ultimo_controllo": "2026-10-09T11:37:50.769287",
     "fonti": {
       "greenhouse": null,
       "lever": null,
