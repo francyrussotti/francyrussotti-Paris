@@ -15831,7 +15831,7 @@
     }
   },
   "rayssac avocats": {
-    "ultimo_controllo": "2026-09-11T09:19:05.722694",
+    "ultimo_controllo": "2026-10-12T12:38:13.923974",
     "fonti": {
       "greenhouse": null,
       "lever": null,
@@ -16255,6 +16255,15 @@
   },
   "tango 1": {
     "ultimo_controllo": "2026-10-09T11:37:50.769287",
+    "fonti": {
+      "greenhouse": null,
+      "lever": null,
+      "ashby": null,
+      "smartrecruiters": null
+    }
+  },
+  "philip morris france": {
+    "ultimo_controllo": "2026-10-12T12:38:13.923974",
     "fonti": {
       "greenhouse": null,
       "lever": null,
