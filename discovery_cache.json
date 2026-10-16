@@ -15840,7 +15840,7 @@
     }
   },
   "elvesys": {
-    "ultimo_controllo": "2026-09-14T10:16:13.202675",
+    "ultimo_controllo": "2026-10-16T09:27:41.740746",
     "fonti": {
       "greenhouse": null,
       "lever": null,
@@ -16320,6 +16320,15 @@
     "ultimo_controllo": "2026-10-14T09:54:45.558884",
     "fonti": {
       "greenhouse": null,
+      "lever": null,
+      "ashby": null,
+      "smartrecruiters": null
+    }
+  },
+  "ics": {
+    "ultimo_controllo": "2026-10-16T09:27:41.740746",
+    "fonti": {
+      "greenhouse": "ics",
       "lever": null,
       "ashby": null,
       "smartrecruiters": null
