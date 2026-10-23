@@ -15939,7 +15939,7 @@
     }
   },
   "urps infirmiers ile de france": {
-    "ultimo_controllo": "2026-09-21T10:21:43.981460",
+    "ultimo_controllo": "2026-10-23T09:57:23.256557",
     "fonti": {
       "greenhouse": null,
       "lever": null,
@@ -15948,7 +15948,7 @@
     }
   },
   "greenleaze": {
-    "ultimo_controllo": "2026-09-23T09:42:25.302533",
+    "ultimo_controllo": "2026-10-23T09:57:23.256557",
     "fonti": {
       "greenhouse": null,
       "lever": null,
@@ -15957,7 +15957,7 @@
     }
   },
   "momen": {
-    "ultimo_controllo": "2026-09-23T09:42:25.302533",
+    "ultimo_controllo": "2026-10-23T09:57:23.256557",
     "fonti": {
       "greenhouse": null,
       "lever": null,
@@ -15966,7 +15966,7 @@
     }
   },
   "adsteroid 1": {
-    "ultimo_controllo": "2026-09-23T09:42:25.302533",
+    "ultimo_controllo": "2026-10-23T09:57:23.256557",
     "fonti": {
       "greenhouse": null,
       "lever": null,
@@ -15975,7 +15975,7 @@
     }
   },
   "toucan toco": {
-    "ultimo_controllo": "2026-09-23T09:42:25.302533",
+    "ultimo_controllo": "2026-10-23T09:57:23.256557",
     "fonti": {
       "greenhouse": null,
       "lever": null,
@@ -15984,7 +15984,7 @@
     }
   },
   "Gojiberry AI": {
-    "ultimo_controllo": "2026-09-23T09:42:25.302533",
+    "ultimo_controllo": "2026-10-23T09:57:23.256557",
     "fonti": {
       "greenhouse": null,
       "lever": null,
@@ -16390,6 +16390,15 @@
   },
   "neodesystems": {
     "ultimo_controllo": "2026-10-21T09:48:56.530253",
+    "fonti": {
+      "greenhouse": null,
+      "lever": null,
+      "ashby": null,
+      "smartrecruiters": null
+    }
+  },
+  "cadsmile": {
+    "ultimo_controllo": "2026-10-23T09:57:23.256557",
     "fonti": {
       "greenhouse": null,
       "lever": null,
