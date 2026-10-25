@@ -311,26 +311,41 @@ def job_id(azienda: str, offerta: dict) -> str:
 # v2: l'ID usa il nome dell'azienda.
 SEEN_VERSIONE = 2
 
-def carica_seen() -> tuple[set, int]:
+# La migrazione v1 → v2 si fa fonte per fonte: una fonte è "migrata" solo
+# dopo un run in cui ha restituito annunci. Se una fonte salta un giorno
+# (es. sito irraggiungibile), i suoi vecchi annunci restano riconosciuti
+# col vecchio ID e non tornano come nuovi quando la fonte riprende.
+TUTTE_LE_FONTI = ["Greenhouse", "Lever", "Ashby", "SmartRecruiters", "Welcome to the Jungle"]
+
+def carica_seen() -> tuple[set, set]:
+    """Restituisce (ID già visti, fonti già migrate al formato v2)."""
     if os.path.exists(SEEN_FILE):
         try:
             with open(SEEN_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             ids = set(data.get("ids", []))
             versione = data.get("versione", 1)
+            if versione < 2:
+                fonti_migrate = set()
+            elif "fonti_migrate" in data:
+                fonti_migrate = set(data["fonti_migrate"])
+            else:
+                # Primo run v2 (25/10/2026): WTTJ aveva restituito 0 annunci,
+                # quindi solo le altre fonti sono state migrate.
+                fonti_migrate = set(TUTTE_LE_FONTI) - {"Welcome to the Jungle"}
             print(f"📂 Caricati {len(ids)} ID già visti (formato v{versione})")
-            return ids, versione
+            return ids, fonti_migrate
         except Exception as e:
             print(f"⚠️  Errore lettura {SEEN_FILE}: {e}")
     else:
         print(f"📂 {SEEN_FILE} non trovato — prima esecuzione")
-    return set(), SEEN_VERSIONE
+    return set(), set(TUTTE_LE_FONTI)
 
-def salva_seen(seen: set):
+def salva_seen(seen: set, fonti_migrate: set):
     try:
         with open(SEEN_FILE, "w", encoding="utf-8") as f:
-            json.dump({"versione": SEEN_VERSIONE, "ids": sorted(seen),
-                       "aggiornato": datetime.now().isoformat()}, f, indent=2)
+            json.dump({"versione": SEEN_VERSIONE, "fonti_migrate": sorted(fonti_migrate),
+                       "ids": sorted(seen), "aggiornato": datetime.now().isoformat()}, f, indent=2)
         print(f"💾 Salvati {len(seen)} ID")
     except Exception as e:
         print(f"⚠️  Errore scrittura {SEEN_FILE}: {e}")
@@ -567,25 +582,21 @@ WTTJ_PAGINE_PARALLELE = 4   # pagine aperte insieme: abbastanza per andare ~4x p
                             # poche per non sembrare un attacco al sito
 WTTJ_SOGLIA_FALLIMENTI = 15 # fallimenti di fila oltre cui ci fermiamo (probabile blocco)
 
-# Immagini, font e video non servono per leggere gli annunci: bloccarli rende
-# ogni pagina molto più leggera e fa arrivare prima lo stato "networkidle".
-_RISORSE_INUTILI = {"image", "font", "media"}
+# NB: la pagina va caricata esattamente come nella versione verificata dal vivo
+# (browser.new_page con UA da browser, nessun blocco di immagini/font, nessun
+# locale forzato, attesa di 2s). Il 25/10/2026 una versione che bloccava
+# immagini/font e forzava il locale ha trovato 0 annunci su 521 aziende.
 
 async def _wttj_async(slugs: list) -> tuple[list, int]:
     risultati = []
-    stato = {"fallimenti_consecutivi": 0, "stop": False, "saltate": 0}
+    stato = {"fallimenti_consecutivi": 0, "stop": False, "saltate": 0,
+             "pagine_ok": 0, "card_totali": 0, "esempi_vuoti": []}
     coda: asyncio.Queue = asyncio.Queue()
     for s in slugs:
         coda.put_nowait(s)
 
-    async def blocca_risorse(route):
-        if route.request.resource_type in _RISORSE_INUTILI:
-            await route.abort()
-        else:
-            await route.continue_()
-
-    async def worker(context):
-        page = await context.new_page()
+    async def worker(browser):
+        page = await browser.new_page(user_agent=BROWSER_USER_AGENT)
         banner_gestito = False
         while True:
             try:
@@ -607,7 +618,7 @@ async def _wttj_async(slugs: list) -> tuple[list, int]:
                         except Exception:
                             pass
                     banner_gestito = True
-                await page.wait_for_timeout(1500)
+                await page.wait_for_timeout(2000)
                 jobs = await page.eval_on_selector_all(
                     "[data-testid^='job-thumb-']",
                     "els => els.map(e => ({text: e.innerText, "
@@ -615,6 +626,10 @@ async def _wttj_async(slugs: list) -> tuple[list, int]:
                     "(e.closest('a') ? e.closest('a').href : null)}))"
                 )
                 stato["fallimenti_consecutivi"] = 0
+                stato["pagine_ok"] += 1
+                stato["card_totali"] += len(jobs)
+                if not jobs and len(stato["esempi_vuoti"]) < 3:
+                    stato["esempi_vuoti"].append(f"{slug} (titolo pagina: {await page.title()!r})")
             except Exception as e:
                 print(f"    ⚠️  {slug}: {str(e).splitlines()[0]}")
                 stato["fallimenti_consecutivi"] += 1
@@ -646,10 +661,15 @@ async def _wttj_async(slugs: list) -> tuple[list, int]:
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-        context = await browser.new_context(user_agent=BROWSER_USER_AGENT, locale="en-US")
-        await context.route("**/*", blocca_risorse)
-        await asyncio.gather(*(worker(context) for _ in range(WTTJ_PAGINE_PARALLELE)))
+        await asyncio.gather(*(worker(browser) for _ in range(WTTJ_PAGINE_PARALLELE)))
         await browser.close()
+    # Diagnostica: distingue "pagine senza annunci" (selettore/caricamento rotto)
+    # da "annunci trovati ma scartati dai filtri".
+    print(f"   [diagnostica] {stato['pagine_ok']} pagine caricate, {stato['card_totali']} annunci "
+          f"letti prima dei filtri")
+    if stato["pagine_ok"] and not stato["card_totali"]:
+        print(f"   ⚠️  Nessun annuncio letto da nessuna pagina: probabile cambio di struttura "
+              f"del sito o pagina non caricata del tutto. Esempi: {stato['esempi_vuoti']}")
     return risultati, stato["saltate"]
 
 def scrape_wttj():
@@ -914,10 +934,11 @@ def main():
     print(f"  PARIS JOB NEWSLETTER  {datetime.now():%d/%m/%Y %H:%M}")
     print(f"{'='*55}\n")
 
-    seen, versione_seen = carica_seen()
-    migrazione_da_v1 = versione_seen < 2
-    if migrazione_da_v1:
-        print("🔄 Aggiorno il formato di seen_jobs.json (v1 → v2), senza rimandare annunci già ricevuti")
+    seen, fonti_migrate = carica_seen()
+    da_migrare = [f for f in TUTTE_LE_FONTI if f not in fonti_migrate]
+    if da_migrare:
+        print(f"🔄 Aggiorno il formato di seen_jobs.json per: {', '.join(da_migrare)} "
+              f"(senza rimandare annunci già ricevuti)")
     storico = carica_storico()
 
     scrapers = [
@@ -938,7 +959,8 @@ def main():
             media = media_storica_per_fonte(storico, nome)
             health_check(nome, len(offerte), media)
             if offerte:
-                nuove, seen = filtra_nuove(nome, offerte, seen, migrazione_da_v1)
+                nuove, seen = filtra_nuove(nome, offerte, seen, nome not in fonti_migrate)
+                fonti_migrate.add(nome)
                 if nuove:
                     tutte_nuove[nome] = nuove
         except Exception as e:
@@ -946,7 +968,7 @@ def main():
             tutte_trovate[nome] = []
         time.sleep(1)
 
-    salva_seen(seen)
+    salva_seen(seen, fonti_migrate)
 
     # Aggiungiamo la riga di oggi allo storico, per i confronti dei prossimi giorni
     storico.append({
