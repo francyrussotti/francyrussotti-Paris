@@ -208,6 +208,64 @@ def nomi_da_ycombinator() -> list[str]:
     return nomi
 
 
+# Indirizzi dei board delle piattaforme che leggiamo: "piattaforma" -> regex sullo URL
+# di un annuncio, il gruppo 1 è lo slug/id dell'azienda.
+_ATS_DA_URL = {
+    "greenhouse": r"(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io/(?:embed/job_app\?for=)?([\w.-]+)",
+    "lever": r"jobs\.lever\.co/([\w.-]+)",
+    "ashby": r"jobs\.ashbyhq\.com/([\w.%-]+)",
+    "smartrecruiters": r"(?:jobs|careers)\.smartrecruiters\.com/([\w.-]+)",
+}
+
+def slug_da_board_vc() -> dict:
+    """Aziende dei portafogli VC con annunci a Parigi: dall'indirizzo dei loro
+    annunci ricaviamo direttamente piattaforma e slug (es. jobs.ashbyhq.com/gorgias
+    -> ashby: gorgias), senza dover indovinare lo slug dal nome.
+    Restituisce {nome azienda: {piattaforma: slug}}. Riusa i lettori dei board VC
+    di paris_job_newsletter.py (stessi fondi, stessa logica)."""
+    try:
+        import paris_job_newsletter as pjn
+    except Exception as e:
+        print(f"⚠️  Board VC non disponibili: {e}")
+        return {}
+    annunci = []
+    for dominio, (fondo, collection_id) in pjn.VC_GETRO.items():
+        annunci += pjn._getro_board(dominio, fondo, collection_id, grezzi=True)
+    for dominio, fondo in pjn.VC_CONSIDER.items():
+        annunci += pjn._consider_board(dominio, fondo, grezzi=True)
+    trovati = {}
+    for a in annunci:
+        url = (a.get("url") or "").lower()
+        for piattaforma, pattern in _ATS_DA_URL.items():
+            m = re.search(pattern, url)
+            if m and a.get("azienda"):
+                trovati.setdefault(a["azienda"], {})[piattaforma] = m.group(1).split("?")[0]
+        m = re.search(r"welcometothejungle\.com/\w+/companies/([a-z0-9-]+)", url)
+        if m:
+            WTTJ_SLUGS_RACCOLTI.append(m.group(1))
+    print(f"   → board VC: {len(annunci)} annunci a Parigi, {len(trovati)} aziende con piattaforma riconosciuta")
+    return trovati
+
+def aggiungi_slug_vc(cache: dict, trovati: dict, verifiche: dict) -> int:
+    """Verifica gli slug ricavati dai board VC e li aggiunge alla cache."""
+    def verifica(voce):
+        nome, piattaforme = voce
+        return nome, {p: (slug if verifiche[p](slug) else None) for p, slug in piattaforme.items()}
+    aggiunti = 0
+    oggi = datetime.now().isoformat()
+    with ThreadPoolExecutor(max_workers=MAX_WORKER_PARALLELI) as executor:
+        for nome, esito in executor.map(verifica, trovati.items()):
+            if not any(esito.values()):
+                continue
+            voce = cache.setdefault(nome, {"ultimo_controllo": oggi, "fonti": {}})
+            for p, slug in esito.items():
+                if slug and voce["fonti"].get(p) != slug:
+                    voce["fonti"][p] = slug
+                    aggiunti += 1
+                    print(f"✅ {p.capitalize()} da board VC: {nome} -> {slug}")
+            voce["ultimo_controllo"] = oggi
+    return aggiunti
+
 def nomi_manuali_fallback() -> list[str]:
     """Fallback minimo se le fonti automatiche non rispondono: una manciata
     di nomi noti per bootstrap iniziale. Non è una lista 'target' — è solo
@@ -372,6 +430,11 @@ def scopri_slug_validi(nomi_aziende: list[str]) -> dict:
                     if slug:
                         print(f"✅ {fonte.capitalize()} trovato: {nome} -> {slug}")
 
+    # Aziende dei portafogli VC: piattaforma e slug letti direttamente dagli annunci.
+    print("🔎 Aziende dai portafogli VC...")
+    aggiunti = aggiungi_slug_vc(cache, slug_da_board_vc(), verifiche)
+    print(f"   → {aggiunti} board aggiunti dai portafogli VC")
+
     salva_cache(cache)
 
     # Il risultato finale è l'accumulo di TUTTO ciò che la cache ha mai trovato,
@@ -380,7 +443,7 @@ def scopri_slug_validi(nomi_aziende: list[str]) -> dict:
     trovati = {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": []}
     for voce in cache.values():
         for fonte, slug in voce["fonti"].items():
-            if slug:
+            if slug and fonte in trovati:
                 trovati[fonte].append(slug)
 
     return {k: sorted(set(v)) for k, v in trovati.items()}

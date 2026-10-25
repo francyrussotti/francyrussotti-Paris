@@ -890,7 +890,8 @@ def _offerta_vc(titolo, azienda, location, url, data, fondo):
     o["via"] = fondo
     return o
 
-def _getro_board(dominio: str, fondo: str, collection_id: int) -> list:
+def _getro_board(dominio: str, fondo: str, collection_id: int, grezzi: bool = False) -> list:
+    """grezzi=True: tutti gli annunci di Parigi senza filtri (usato dall'auto-discovery)."""
     offerte = []
     url_api = f"https://api.getro.com/api/v2/collections/{collection_id}/search/jobs"
     headers = {**_JSON_HEADERS, "Origin": f"https://{dominio}", "Referer": f"https://{dominio}/jobs"}
@@ -912,6 +913,9 @@ def _getro_board(dominio: str, fondo: str, collection_id: int) -> list:
             titolo = job.get("title", "")
             location = ", ".join(job.get("locations") or [])
             url = job.get("url", "")
+            if grezzi:
+                offerte.append({"azienda": (job.get("organization") or {}).get("name", ""), "url": url})
+                continue
             if _gia_coperto(url) or not passa_filtri(titolo, location, ""):
                 continue
             offerte.append(_offerta_vc(titolo, (job.get("organization") or {}).get("name", ""),
@@ -932,7 +936,7 @@ def _con_riprova(funzione, tentativi=2):
                 raise
             time.sleep(3)
 
-def _consider_board(dominio: str, fondo: str) -> list:
+def _consider_board(dominio: str, fondo: str, grezzi: bool = False) -> list:
     """Consider non filtra bene per città: scarichiamo tutti gli annunci del
     board (pochi MB) e teniamo quelli di Parigi con is_paris_location."""
     sessione = requests.Session()
@@ -970,6 +974,10 @@ def _consider_board(dominio: str, fondo: str) -> list:
             letti += 1
             titolo = job.get("title", "")
             location = ", ".join(job.get("locations") or [])
+            if grezzi:
+                if is_paris_location(location):
+                    offerte.append({"azienda": job.get("companyName", ""), "url": url})
+                continue
             if _gia_coperto(url) or not passa_filtri(titolo, location, ""):
                 continue
             offerte.append(_offerta_vc(titolo, job.get("companyName", ""), location, url,
