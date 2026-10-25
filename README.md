@@ -32,8 +32,11 @@ e i job board pubblici dei fondi VC (portafogli di Accel, Balderton, Alven, XAng
    python paris_job_newsletter.py
    ```
 
-5. **Push su GitHub**: il workflow in `.github/workflows/newsletter.yml` gira automaticamente
-   ogni giorno alle 07:00 UTC. Puoi anche avviarlo a mano da tab "Actions" → "Run workflow".
+5. **Push su GitHub**: il workflow in `.github/workflows/newsletter.yml` è allineato alla
+   newsletter Big 4: parte a tre orari di riserva (02:52, 03:52, 04:52 UTC) perché GitHub
+   ritarda le partenze di ore; la prima run che parte invia, le altre si fermano subito
+   (`ultimo_invio` in `seen_jobs.json`). Avvio manuale da "Actions" → "Run workflow"
+   (spunta "forza" per inviare anche se la mail di oggi è già partita).
 
 ## Filosofia del progetto
 

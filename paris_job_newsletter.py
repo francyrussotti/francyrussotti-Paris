@@ -461,10 +461,23 @@ def salva_aziende_note(note: dict):
     except Exception as e:
         print(f"⚠️  Errore scrittura {AZIENDE_NOTE_FILE}: {e}")
 
-def salva_seen(seen: set, fonti_migrate: set):
+def oggi_parigi() -> str:
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("Europe/Paris")).strftime("%Y-%m-%d")
+
+def leggi_ultimo_invio() -> str | None:
     try:
+        with open(SEEN_FILE, "r", encoding="utf-8") as f:
+            return json.load(f).get("ultimo_invio")
+    except Exception:
+        return None
+
+def salva_seen(seen: set, fonti_migrate: set, ultimo_invio: str | None = None):
+    try:
+        ultimo_invio = ultimo_invio or leggi_ultimo_invio()
         with open(SEEN_FILE, "w", encoding="utf-8") as f:
             json.dump({"versione": SEEN_VERSIONE, "fonti_migrate": sorted(fonti_migrate),
+                       "ultimo_invio": ultimo_invio,
                        "ids": sorted(seen), "aggiornato": datetime.now().isoformat()}, f, indent=2)
         print(f"💾 Salvati {len(seen)} ID")
     except Exception as e:
@@ -1286,7 +1299,7 @@ def invia_email(html_body, testo_body, oggetto):
     destinatari = [d.strip() for d in EMAIL_DESTINATARIO.split(",") if d.strip()]
     if not destinatari or not GMAIL_MITTENTE or not GMAIL_PASSWORD:
         print("⚠️  Credenziali email mancanti, salto invio (controlla i Secrets)")
-        return
+        return False
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = oggetto
@@ -1299,10 +1312,12 @@ def invia_email(html_body, testo_body, oggetto):
             s.login(GMAIL_MITTENTE, GMAIL_PASSWORD)
             s.sendmail(GMAIL_MITTENTE, destinatari, msg.as_string())
         print(f"✅ Email inviata a {len(destinatari)} destinatari")
+        return True
     except smtplib.SMTPAuthenticationError:
         print("❌ Errore autenticazione → rigenera App Password su myaccount.google.com")
     except Exception as e:
         print(f"❌ Errore invio: {e}")
+    return False
 
 # ============================================================
 # 🩺  HEALTH CHECK — rileva scraper rotti (0 risultati anomalo)
@@ -1361,6 +1376,14 @@ def main():
     print(f"\n{'='*55}")
     print(f"  PARIS JOB NEWSLETTER  {datetime.now():%d/%m/%Y %H:%M}")
     print(f"{'='*55}\n")
+
+    # Il workflow parte a più orari di riserva (GitHub ritarda le partenze):
+    # la prima run che parte invia, le altre si fermano qui. NEWSLETTER_FORZA=true
+    # (avvio manuale con "forza") invia comunque.
+    forza = os.environ.get("NEWSLETTER_FORZA", "").strip().lower() in ("1", "true", "yes", "si", "sì")
+    if not forza and leggi_ultimo_invio() == oggi_parigi():
+        print(f"✅ Newsletter di oggi ({oggi_parigi()}) già inviata: niente da fare.")
+        return
 
     seen, fonti_migrate = carica_seen()
     da_migrare = [f for f in FONTI_STORICHE if f not in fonti_migrate]
@@ -1448,7 +1471,8 @@ def main():
 
     html, totale = genera_html(tutte_nuove, totale_trovate, avvisi)
     testo = genera_testo(tutte_nuove, totale_trovate, avvisi)
-    invia_email(html, testo, oggetto_email(totale, conta_ruoli_target(tutte_nuove)))
+    if invia_email(html, testo, oggetto_email(totale, conta_ruoli_target(tutte_nuove))):
+        salva_seen(seen, fonti_migrate, ultimo_invio=oggi_parigi())
     print("\n✨ Done!\n")
 
 if __name__ == "__main__":
