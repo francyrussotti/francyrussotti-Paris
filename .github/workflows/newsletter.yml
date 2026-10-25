@@ -2,8 +2,30 @@ name: 🗼 Paris Job Newsletter
 
 on:
   schedule:
-    - cron: "0 7 * * *"   # ogni giorno alle 07:00 UTC (~08:00/09:00 ora di Parigi)
-  workflow_dispatch:        # permette anche l'avvio manuale da GitHub
+    # Allineata alla newsletter Big 4 (francyrussotti/BIG4-Jobs-Newsletter).
+    # La pianificazione di GitHub NON è puntuale: parte con ore di ritardo (a
+    # ottobre 2026 il cron delle 07:00 UTC partiva tra le 11:20 e le 16:30 UTC).
+    # Per questo ci sono più orari di riserva: la prima run che parte invia,
+    # le successive vedono "ultimo_invio" = oggi in seen_jobs.json e si fermano.
+    # Anticipati di 15 minuti rispetto alla Big 4 (03:07/04:07/05:07) perché
+    # questa newsletter impiega ~15-20 minuti in più a girare.
+    # Orari in UTC (GitHub non gestisce l'ora legale):
+    #   02:52 UTC = 03:52 ora solare / 04:52 ora legale
+    - cron: "52 2 * * *"
+    - cron: "52 3 * * *"
+    - cron: "52 4 * * *"
+  workflow_dispatch:
+    inputs:
+      forza:
+        description: "Invia anche se la newsletter di oggi è già partita"
+        type: boolean
+        default: false
+
+# Mai due run in parallelo: manderebbero due email e andrebbero in conflitto
+# sul push di seen_jobs.json.
+concurrency:
+  group: newsletter
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -17,6 +39,9 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v6
         with:
+          # Ultima versione del branch all'avvio: una run rimasta in coda dietro
+          # un'altra vede il seen_jobs.json aggiornato e non reinvia.
+          ref: ${{ github.ref }}
           persist-credentials: true
 
       - name: Setup Python
@@ -44,12 +69,29 @@ jobs:
           GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
           EMAIL_DESTINATARIO: ${{ secrets.EMAIL_DESTINATARIO }}
           PYTHONUNBUFFERED: "1"  # log visibili in tempo reale, non tutti alla fine
+          NEWSLETTER_FORZA: ${{ inputs.forza }}
         run: python paris_job_newsletter.py
 
       - name: Commit seen_jobs.json
+        if: always()   # anche se lo script si interrompe: non perdere gli annunci già visti
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
           git add seen_jobs.json stats_storico.json slug_inattivi.json aziende_note.json
-          git commit -m "update seen jobs" || echo "no changes"
-          git push
+          if git diff --staged --quiet; then
+            echo "Nessuna modifica da salvare"
+            exit 0
+          fi
+          git commit -m "update seen jobs"
+          # Se nel frattempo il branch è cambiato (es. l'altra automazione ha
+          # salvato i suoi file), riallinea invece di fallire.
+          for tentativo in 1 2 3; do
+            if git push; then
+              echo "Push riuscito al tentativo $tentativo"
+              exit 0
+            fi
+            echo "Push fallito (tentativo $tentativo), riallineo con il remoto..."
+            git pull --rebase --autostash
+          done
+          echo "Push fallito dopo 3 tentativi"
+          exit 1
