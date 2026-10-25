@@ -57,6 +57,17 @@ e i job board pubblici dei fondi VC (portafogli di Accel, Balderton, Alven, XAng
   Per aggiungere un fondo che usa Getro serve l'id del board (nella pagina, nel JSON
   `__NEXT_DATA__` → `"network":{"id":...}`); per Consider basta il dominio.
   Al primo run di una fonte nuova arrivano solo gli annunci degli ultimi 7 giorni.
+- **Filtri sul titolo**: stage/internship e ruoli troppo senior sono esclusi
+  (`ESCLUDI_TITOLI` in `paris_job_newsletter.py`, modificabile).
+- **Controllo descrizioni**: per WTTJ e Portfolio VC (che danno solo il titolo) la
+  pagina di ogni annuncio in uscita viene letta per scartare chi chiede il francese.
+- **Avvisi**: se una fonte trova 0 annunci o crolla rispetto alla media, la mail lo
+  segnala in un riquadro arancione. I board che rispondono 404 per 5 run di fila
+  vengono ricontrollati solo il lunedì (`slug_inattivi.json`).
+- **Auto-discovery dai fondi VC**: `discover_companies.py` legge anche gli annunci dei
+  board VC e ricava dal link la piattaforma dell'azienda (es. `jobs.ashbyhq.com/gorgias`).
+  Per le aziende appena aggiunte, al primo run arrivano solo gli annunci degli ultimi
+  7 giorni (`aziende_note.json`); lo stesso link non viene mai mandato due volte.
 - WTTJ apre `WTTJ_PAGINE_PARALLELE` pagine insieme (default 4). Se nel log compaiono
   molti timeout o il circuit breaker scatta spesso, abbassa il numero.
 - **Nomi azienda**: se un nome appare scritto male nella mail, aggiungilo a

@@ -435,6 +435,32 @@ def carica_seen() -> tuple[set, set]:
         print(f"📂 {SEEN_FILE} non trovato — prima esecuzione")
     return set(), set(TUTTE_LE_FONTI)
 
+# Aziende già lette per ogni fonte: serve a riconoscere quelle appena aggiunte
+# dall'auto-discovery (vedi filtra_nuove, aziende_nuove).
+AZIENDE_NOTE_FILE = "aziende_note.json"
+
+def aziende_monitorate() -> dict:
+    """Tutte le aziende che ogni fonte controlla oggi (con o senza annunci)."""
+    return {"Greenhouse": set(GREENHOUSE_SLUGS), "Lever": set(LEVER_SLUGS), "Ashby": set(ASHBY_SLUGS),
+            "SmartRecruiters": set(SMARTRECRUITERS_IDS), "Welcome to the Jungle": set(WTTJ_SLUGS)}
+
+def carica_aziende_note() -> dict | None:
+    try:
+        with open(AZIENDE_NOTE_FILE, "r", encoding="utf-8") as f:
+            return {k: set(v) for k, v in json.load(f).items()}
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        print(f"⚠️  Errore lettura {AZIENDE_NOTE_FILE}: {e}")
+        return None
+
+def salva_aziende_note(note: dict):
+    try:
+        with open(AZIENDE_NOTE_FILE, "w", encoding="utf-8") as f:
+            json.dump({k: sorted(v) for k, v in sorted(note.items())}, f, indent=1, ensure_ascii=False)
+    except Exception as e:
+        print(f"⚠️  Errore scrittura {AZIENDE_NOTE_FILE}: {e}")
+
 def salva_seen(seen: set, fonti_migrate: set):
     try:
         with open(SEEN_FILE, "w", encoding="utf-8") as f:
@@ -451,25 +477,40 @@ def _troppo_vecchio(offerta: dict, giorni: int) -> bool:
         return True  # senza data non sappiamo se è recente: al primo run lo saltiamo
     return (datetime.now() - data).days > giorni
 
+def url_id(url: str) -> str:
+    """ID dal link dell'annuncio (senza parametri): riconosce lo stesso annuncio
+    arrivato da due fonti diverse (es. board VC e Ashby) anche se titolo o
+    località sono scritti in modo diverso."""
+    u = re.sub(r"[?#].*$", "", (url or "").strip().lower()).rstrip("/")
+    return "u:" + hashlib.sha256(u.encode("utf-8")).hexdigest() if u else ""
+
 def filtra_nuove(nome_fonte: str, offerte: list, seen: set,
                  migrazione_da_v1: bool = False,
-                 solo_ultimi_giorni: int | None = None) -> tuple[list, set]:
+                 solo_ultimi_giorni: int | None = None,
+                 aziende_nuove: set | None = None) -> tuple[list, set]:
     """Separa gli annunci nuovi da quelli già visti.
 
     migrazione_da_v1: un annuncio il cui vecchio ID v1 è già in seen viene
       considerato già visto (niente mail con annunci già ricevuti).
     solo_ultimi_giorni: primo run di una fonte nuova, mostra solo gli
-      annunci recenti e segna gli altri come visti."""
+      annunci recenti e segna gli altri come visti.
+    aziende_nuove: aziende appena aggiunte alla fonte: stessa regola dei
+      giorni, ma solo per i loro annunci."""
     nuove, nuovi_ids = [], set()
     for o in offerte:
         jid = job_id(o.get("azienda_id") or o.get("azienda", ""), o)
-        if jid in seen or jid in nuovi_ids:
+        uid = url_id(o.get("url", ""))
+        if jid in seen or jid in nuovi_ids or (uid and (uid in seen or uid in nuovi_ids)):
+            nuovi_ids.update(x for x in (jid, uid) if x)  # registra anche l'altro ID
             continue
-        nuovi_ids.add(jid)
+        nuovi_ids.update(x for x in (jid, uid) if x)
         if migrazione_da_v1 and job_id(nome_fonte, o) in seen:
             continue  # già ricevuto col vecchio formato: registra solo il nuovo ID
         if solo_ultimi_giorni is not None and _troppo_vecchio(o, solo_ultimi_giorni):
             continue
+        if (aziende_nuove and o.get("azienda_id") in aziende_nuove and o.get("data")
+                and _troppo_vecchio(o, GIORNI_PRIMO_RUN_FONTE_NUOVA)):
+            continue  # azienda appena aggiunta: dei suoi annunci vecchi non ti avvisiamo
         nuove.append(o)
     seen_aggiornato = seen | nuovi_ids
     print(f"   → {len(offerte)} trovate · {len(nuove)} nuove · {len(offerte)-len(nuove)} già viste")
@@ -1037,9 +1078,16 @@ def _annuncio_ok(offerta: dict) -> bool:
         visibile, grezzo = _testo_pagina(offerta["url"])
     except Exception:
         return True  # pagina non leggibile: nel dubbio lo teniamo
-    if requires_french_hard(visibile) or requires_french_hard(grezzo):
-        return False
     corpo = visibile.strip()
+    if requires_french_hard(visibile):
+        return False
+    # I dati nascosti della pagina (JSON) servono solo se la pagina visibile è
+    # quasi vuota (siti costruiti in JavaScript): altrimenti possono contenere
+    # anche altri annunci dell'azienda e far scartare quello sbagliato.
+    if len(corpo) < 1500:
+        campi = re.sub(r'\\*"\s*[,:\]\}\[\{]+\s*\\*"|\\n', "\n", grezzo)  # un campo JSON per riga
+        if requires_french_hard(campi):
+            return False
     if len(corpo) >= 800 and LANGDETECT_OK:
         try:
             if detect(corpo[:5000]) == "fr":
@@ -1320,6 +1368,10 @@ def main():
         print(f"🔄 Aggiorno il formato di seen_jobs.json per: {', '.join(da_migrare)} "
               f"(senza rimandare annunci già ricevuti)")
     storico = carica_storico()
+    aziende_note = carica_aziende_note()
+    prima_volta_note = aziende_note is None
+    if prima_volta_note:
+        aziende_note = {}
 
     scrapers = [
         ("Greenhouse", scrape_greenhouse),
@@ -1347,10 +1399,19 @@ def main():
                 if prima_volta and nome not in FONTI_STORICHE:
                     print(f"   🆕 Primo run di {nome}: mostro solo gli annunci degli ultimi "
                           f"{GIORNI_PRIMO_RUN_FONTE_NUOVA} giorni")
+                aziende_oggi = {o.get("azienda_id") for o in offerte if o.get("azienda_id")}
+                note = aziende_note.setdefault(nome, set())
+                # Senza storico (primo run con questa funzione) nessuna azienda è "nuova".
+                aziende_nuove = set() if prima_volta_note or not note else aziende_oggi - note
+                if aziende_nuove:
+                    print(f"   🆕 {len(aziende_nuove)} aziende appena aggiunte: dei loro annunci "
+                          f"mostro solo quelli degli ultimi {GIORNI_PRIMO_RUN_FONTE_NUOVA} giorni")
+                note |= aziende_oggi
                 nuove, seen = filtra_nuove(
                     nome, offerte, seen,
                     migrazione_da_v1=prima_volta and nome in FONTI_STORICHE,
-                    solo_ultimi_giorni=GIORNI_PRIMO_RUN_FONTE_NUOVA if prima_volta and nome not in FONTI_STORICHE else None)
+                    solo_ultimi_giorni=GIORNI_PRIMO_RUN_FONTE_NUOVA if prima_volta and nome not in FONTI_STORICHE else None,
+                    aziende_nuove=aziende_nuove)
                 fonti_migrate.add(nome)
                 if nuove:
                     tutte_nuove[nome] = nuove
@@ -1362,6 +1423,9 @@ def main():
 
     salva_seen(seen, fonti_migrate)
     salva_slug_inattivi()
+    for nome, slugs in aziende_monitorate().items():
+        aziende_note.setdefault(nome, set()).update(slugs)
+    salva_aziende_note(aziende_note)
     # Gli annunci scartati qui restano comunque "visti": non verranno ricontrollati.
     tutte_nuove = controlla_descrizioni(tutte_nuove)
 
