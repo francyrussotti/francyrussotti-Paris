@@ -1,5 +1,11 @@
 {
   "versione": 2,
+  "fonti_migrate": [
+    "Ashby",
+    "Greenhouse",
+    "Lever",
+    "SmartRecruiters"
+  ],
   "ids": [
     "000cb694ab7d8a7b5b86b232deae96065a53b30d7df9074150317f934b9f330d",
     "00158aec7b6b9c32c5d90ecddf8c7ef7e112d118d1a1f818c4f9fc85d4ba2de8",
@@ -1072,5 +1078,5 @@
     "ff5cc3ae2ff7529cb250fe3d2eb48bc70bb3ddd5611b848080fa71dabe43b65e",
     "ff820d70f13a18b0035038248fe711c07ccfd5fa9a12ef604bb91e393716dab9"
   ],
-  "aggiornato": "2026-10-25T17:08:37.302170"
+  "aggiornato": "2026-10-25T17:22:56.944913"
 }
