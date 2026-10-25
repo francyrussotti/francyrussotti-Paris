@@ -43,6 +43,7 @@ jobs:
           GMAIL_MITTENTE: ${{ secrets.GMAIL_MITTENTE }}
           GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
           EMAIL_DESTINATARIO: ${{ secrets.EMAIL_DESTINATARIO }}
+          PYTHONUNBUFFERED: "1"  # log visibili in tempo reale, non tutti alla fine
         run: python paris_job_newsletter.py
 
       - name: Commit seen_jobs.json
