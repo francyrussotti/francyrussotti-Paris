@@ -27,7 +27,8 @@ import html as html_lib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
-    from langdetect import detect, LangDetectException
+    from langdetect import detect, LangDetectException, DetectorFactory
+    DetectorFactory.seed = 0  # stesso testo -> stessa lingua a ogni run
     LANGDETECT_OK = True
 except ImportError:
     LANGDETECT_OK = False
@@ -181,6 +182,53 @@ FRENCH_OPTIONAL_MARKERS = [
 # 🔧  UTILITIES HTTP
 # ============================================================
 
+# Aziende il cui board risponde 404 (chiuso o spostato): dopo
+# SOGLIA_SLUG_INATTIVO run di fila le saltiamo, ricontrollandole il lunedì.
+SLUG_INATTIVI_FILE = "slug_inattivi.json"
+SOGLIA_SLUG_INATTIVO = 5
+
+def _carica_slug_inattivi() -> dict:
+    try:
+        with open(SLUG_INATTIVI_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+SLUG_INATTIVI = _carica_slug_inattivi()
+
+def salva_slug_inattivi():
+    try:
+        with open(SLUG_INATTIVI_FILE, "w", encoding="utf-8") as f:
+            json.dump(dict(sorted(SLUG_INATTIVI.items())), f, indent=2)
+    except Exception as e:
+        print(f"⚠️  Errore scrittura {SLUG_INATTIVI_FILE}: {e}")
+
+def _get_board(fonte: str, slug: str, url: str):
+    """Come http_get, ma tiene il conto dei board che rispondono 404."""
+    chiave = f"{fonte}:{slug}"
+    voce = SLUG_INATTIVI.get(chiave)
+    if voce and voce["errori"] >= SOGLIA_SLUG_INATTIVO and datetime.now().weekday() != 0:
+        return None  # inattivo: lo ricontrolliamo solo il lunedì
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
+    except Exception as e:
+        print(f"    ⚠️  GET {url[:70]}... → {e}")
+        return None
+    if r.status_code == 404:
+        voce = SLUG_INATTIVI.setdefault(chiave, {"errori": 0, "dal": datetime.now().strftime("%Y-%m-%d")})
+        voce["errori"] += 1
+        if voce["errori"] == SOGLIA_SLUG_INATTIVO:
+            print(f"    ℹ️  {chiave}: board non trovato per {SOGLIA_SLUG_INATTIVO} run di fila, "
+                  f"da ora lo ricontrollo solo il lunedì")
+        elif voce["errori"] < SOGLIA_SLUG_INATTIVO:
+            print(f"    ⚠️  {chiave}: board non trovato (404), tentativo {voce['errori']}/{SOGLIA_SLUG_INATTIVO}")
+        return None
+    if not r.ok:
+        print(f"    ⚠️  GET {url[:70]}... → HTTP {r.status_code}")
+        return None
+    SLUG_INATTIVI.pop(chiave, None)  # è tornato attivo
+    return r
+
 def http_get(url, **kw):
     try:
         r = requests.get(url, headers=HEADERS, timeout=15, **kw)
@@ -232,14 +280,29 @@ def ha_segnali_francesi_forti(text: str) -> bool:
         return True
     return any(parola in testo for parola in _PAROLE_FUNZIONALI_FRANCESI)
 
+_KEYWORD_PARIGI = ["paris", "île-de-france", "ile-de-france", "idf",
+                   "la défense", "la defense", "la-defense", "neuilly-sur-seine",
+                   "boulogne-billancourt", "issy-les-moulineaux", "levallois-perret",
+                   "saint-denis", "saint-ouen", "montreuil", "puteaux", "courbevoie",
+                   "nanterre", "clichy", "ivry-sur-seine", "vincennes"]
+# Altre città francesi: "Lyon, France" non è Parigi anche se contiene "France".
+_ALTRE_CITTA_FRANCESI = re.compile(
+    r"\b(lyon|marseille|bordeaux|lille|nantes|toulouse|nice|montpellier|strasbourg|rennes|"
+    r"grenoble|sophia|antipolis|aix|niort|balma|annecy|rouen|tours|dijon|metz|nancy|reims|"
+    r"brest|caen|angers|clermont|limoges|orl[eé]ans|le mans|toulon|perpignan|pau|biarritz|"
+    r"valence|avignon|poitiers|mulhouse|besan[cç]on|amiens|le havre|saint-[eé]tienne|cannes|"
+    r"la rochelle|lorient|villeneuve-d.ascq|m[eé]rignac|lab[eè]ge|blagnac|meylan|pessac|"
+    r"compi[eè]gne|montbonnot|sophia-antipolis)\b")
+
 def is_paris_location(location: str) -> bool:
     loc = (location or "").lower()
-    keyword_parigi = ["paris", "france", "île-de-france", "ile-de-france", "idf",
-                       "la défense", "la defense", "la-defense", "neuilly-sur-seine",
-                       "boulogne-billancourt", "issy-les-moulineaux", "levallois-perret",
-                       "saint-denis", "saint-ouen", "montreuil", "puteaux", "courbevoie",
-                       "nanterre", "clichy", "ivry-sur-seine", "vincennes"]
-    return any(kw in loc for kw in keyword_parigi) or loc.strip() == "fr"
+    if any(kw in loc for kw in _KEYWORD_PARIGI):
+        return True
+    # Solo "France" (o "FR"), senza città: va bene (es. "Remote, France"),
+    # a meno che non sia indicata un'altra città francese.
+    if "france" in loc or re.search(r"\bfr\b", loc):
+        return not _ALTRE_CITTA_FRANCESI.search(loc)
+    return False
 
 def pulisci_html(testo: str) -> str:
     """Toglie i tag HTML dalle descrizioni (Greenhouse le manda come HTML
@@ -275,10 +338,25 @@ def requires_french_hard(text: str) -> bool:
 # "Francophone Sales") in pratica richiede di parlarlo.
 _FRANCESE_NEL_TITOLO = re.compile(r"\b(french|francophone|fran[cç]ais)\b", re.IGNORECASE)
 
+# Ruoli esclusi per titolo (scelta dell'utente, 25/10/2026): stage/tirocini e
+# ruoli troppo senior. Per cambiarli basta modificare questa lista.
+ESCLUDI_TITOLI = [
+    # stage, tirocini, alternanza
+    r"\bintern(ship)?s?\b", r"(?<!early[- ])\bstage\b", r"\bstagiaire\b",
+    r"\balternan(ce|t|te)\b", r"\bapprenti(ce|ceship|ssage)?\b", r"\bwork(ing)? student\b",
+    r"\bwerkstudent\b", r"\btrainee\b",
+    # troppo senior
+    r"\bsenior\b", r"\bsr\.?(?=\s)", r"\bprincipal\b", r"\bhead of\b", r"\bdirector\b",
+    r"\bdirecteur\b", r"\bdirectrice\b", r"\bvp\b", r"\bvice[- ]president\b", r"\bchief\b",
+    r"\bc[teo]o\b",
+    r"\bstaff (engineer|software|data|product|designer|scientist|developer|machine|ml|security|backend|frontend)",
+]
+_TITOLO_ESCLUSO = re.compile("|".join(ESCLUDI_TITOLI), re.IGNORECASE)
+
 def passa_filtri(titolo: str, location: str, descrizione: str) -> bool:
     if not is_paris_location(location):
         return False
-    if _FRANCESE_NEL_TITOLO.search(titolo or ""):
+    if _FRANCESE_NEL_TITOLO.search(titolo or "") or _TITOLO_ESCLUSO.search(titolo or ""):
         return False
     descrizione = pulisci_html(descrizione)
     testo_completo = f"{titolo}\n{descrizione}"
@@ -357,6 +435,32 @@ def carica_seen() -> tuple[set, set]:
         print(f"📂 {SEEN_FILE} non trovato — prima esecuzione")
     return set(), set(TUTTE_LE_FONTI)
 
+# Aziende già lette per ogni fonte: serve a riconoscere quelle appena aggiunte
+# dall'auto-discovery (vedi filtra_nuove, aziende_nuove).
+AZIENDE_NOTE_FILE = "aziende_note.json"
+
+def aziende_monitorate() -> dict:
+    """Tutte le aziende che ogni fonte controlla oggi (con o senza annunci)."""
+    return {"Greenhouse": set(GREENHOUSE_SLUGS), "Lever": set(LEVER_SLUGS), "Ashby": set(ASHBY_SLUGS),
+            "SmartRecruiters": set(SMARTRECRUITERS_IDS), "Welcome to the Jungle": set(WTTJ_SLUGS)}
+
+def carica_aziende_note() -> dict | None:
+    try:
+        with open(AZIENDE_NOTE_FILE, "r", encoding="utf-8") as f:
+            return {k: set(v) for k, v in json.load(f).items()}
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        print(f"⚠️  Errore lettura {AZIENDE_NOTE_FILE}: {e}")
+        return None
+
+def salva_aziende_note(note: dict):
+    try:
+        with open(AZIENDE_NOTE_FILE, "w", encoding="utf-8") as f:
+            json.dump({k: sorted(v) for k, v in sorted(note.items())}, f, indent=1, ensure_ascii=False)
+    except Exception as e:
+        print(f"⚠️  Errore scrittura {AZIENDE_NOTE_FILE}: {e}")
+
 def salva_seen(seen: set, fonti_migrate: set):
     try:
         with open(SEEN_FILE, "w", encoding="utf-8") as f:
@@ -373,25 +477,40 @@ def _troppo_vecchio(offerta: dict, giorni: int) -> bool:
         return True  # senza data non sappiamo se è recente: al primo run lo saltiamo
     return (datetime.now() - data).days > giorni
 
+def url_id(url: str) -> str:
+    """ID dal link dell'annuncio (senza parametri): riconosce lo stesso annuncio
+    arrivato da due fonti diverse (es. board VC e Ashby) anche se titolo o
+    località sono scritti in modo diverso."""
+    u = re.sub(r"[?#].*$", "", (url or "").strip().lower()).rstrip("/")
+    return "u:" + hashlib.sha256(u.encode("utf-8")).hexdigest() if u else ""
+
 def filtra_nuove(nome_fonte: str, offerte: list, seen: set,
                  migrazione_da_v1: bool = False,
-                 solo_ultimi_giorni: int | None = None) -> tuple[list, set]:
+                 solo_ultimi_giorni: int | None = None,
+                 aziende_nuove: set | None = None) -> tuple[list, set]:
     """Separa gli annunci nuovi da quelli già visti.
 
     migrazione_da_v1: un annuncio il cui vecchio ID v1 è già in seen viene
       considerato già visto (niente mail con annunci già ricevuti).
     solo_ultimi_giorni: primo run di una fonte nuova, mostra solo gli
-      annunci recenti e segna gli altri come visti."""
+      annunci recenti e segna gli altri come visti.
+    aziende_nuove: aziende appena aggiunte alla fonte: stessa regola dei
+      giorni, ma solo per i loro annunci."""
     nuove, nuovi_ids = [], set()
     for o in offerte:
         jid = job_id(o.get("azienda_id") or o.get("azienda", ""), o)
-        if jid in seen or jid in nuovi_ids:
+        uid = url_id(o.get("url", ""))
+        if jid in seen or jid in nuovi_ids or (uid and (uid in seen or uid in nuovi_ids)):
+            nuovi_ids.update(x for x in (jid, uid) if x)  # registra anche l'altro ID
             continue
-        nuovi_ids.add(jid)
+        nuovi_ids.update(x for x in (jid, uid) if x)
         if migrazione_da_v1 and job_id(nome_fonte, o) in seen:
             continue  # già ricevuto col vecchio formato: registra solo il nuovo ID
         if solo_ultimi_giorni is not None and _troppo_vecchio(o, solo_ultimi_giorni):
             continue
+        if (aziende_nuove and o.get("azienda_id") in aziende_nuove and o.get("data")
+                and _troppo_vecchio(o, GIORNI_PRIMO_RUN_FONTE_NUOVA)):
+            continue  # azienda appena aggiunta: dei suoi annunci vecchi non ti avvisiamo
         nuove.append(o)
     seen_aggiornato = seen | nuovi_ids
     print(f"   → {len(offerte)} trovate · {len(nuove)} nuove · {len(offerte)-len(nuove)} già viste")
@@ -455,7 +574,7 @@ def scrape_greenhouse():
 
     def per_azienda(slug):
         url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
-        r = http_get(url)
+        r = _get_board("greenhouse", slug, url)
         if not r:
             return []
         offerte = []
@@ -488,7 +607,7 @@ def scrape_lever():
 
     def per_azienda(slug):
         url = f"https://api.lever.co/v0/postings/{slug}?mode=json"
-        r = http_get(url)
+        r = _get_board("lever", slug, url)
         if not r:
             return []
         azienda = slug_a_nome_leggibile(slug)
@@ -528,7 +647,7 @@ def scrape_ashby():
 
     def per_azienda(slug):
         url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true"
-        r = http_get(url)
+        r = _get_board("ashby", slug, url)
         if not r:
             return []
         azienda = slug_a_nome_leggibile(slug)
@@ -812,7 +931,8 @@ def _offerta_vc(titolo, azienda, location, url, data, fondo):
     o["via"] = fondo
     return o
 
-def _getro_board(dominio: str, fondo: str, collection_id: int) -> list:
+def _getro_board(dominio: str, fondo: str, collection_id: int, grezzi: bool = False) -> list:
+    """grezzi=True: tutti gli annunci di Parigi senza filtri (usato dall'auto-discovery)."""
     offerte = []
     url_api = f"https://api.getro.com/api/v2/collections/{collection_id}/search/jobs"
     headers = {**_JSON_HEADERS, "Origin": f"https://{dominio}", "Referer": f"https://{dominio}/jobs"}
@@ -834,6 +954,9 @@ def _getro_board(dominio: str, fondo: str, collection_id: int) -> list:
             titolo = job.get("title", "")
             location = ", ".join(job.get("locations") or [])
             url = job.get("url", "")
+            if grezzi:
+                offerte.append({"azienda": (job.get("organization") or {}).get("name", ""), "url": url})
+                continue
             if _gia_coperto(url) or not passa_filtri(titolo, location, ""):
                 continue
             offerte.append(_offerta_vc(titolo, (job.get("organization") or {}).get("name", ""),
@@ -854,7 +977,7 @@ def _con_riprova(funzione, tentativi=2):
                 raise
             time.sleep(3)
 
-def _consider_board(dominio: str, fondo: str) -> list:
+def _consider_board(dominio: str, fondo: str, grezzi: bool = False) -> list:
     """Consider non filtra bene per città: scarichiamo tutti gli annunci del
     board (pochi MB) e teniamo quelli di Parigi con is_paris_location."""
     sessione = requests.Session()
@@ -892,6 +1015,10 @@ def _consider_board(dominio: str, fondo: str) -> list:
             letti += 1
             titolo = job.get("title", "")
             location = ", ".join(job.get("locations") or [])
+            if grezzi:
+                if is_paris_location(location):
+                    offerte.append({"azienda": job.get("companyName", ""), "url": url})
+                continue
             if _gia_coperto(url) or not passa_filtri(titolo, location, ""):
                 continue
             offerte.append(_offerta_vc(titolo, job.get("companyName", ""), location, url,
@@ -923,6 +1050,68 @@ def scrape_portfolio_vc():
     risultati = list(per_url.values())
     print(f"   → {len(risultati)} offerte compatibili trovate ({len(tutte) - len(risultati)} doppioni tra fondi)")
     return risultati
+
+# ============================================================
+# 🔎  CONTROLLO DESCRIZIONI — per le fonti che danno solo il titolo
+# ============================================================
+# WTTJ e i board VC non danno la descrizione: il filtro "francese richiesto"
+# lavorerebbe solo sul titolo. Per gli annunci che stanno per finire nella mail
+# (poche decine al giorno) apriamo la pagina dell'annuncio e la controlliamo.
+FONTI_SENZA_DESCRIZIONE = {"Welcome to the Jungle", "Portfolio VC"}
+
+def _testo_pagina(url: str) -> tuple[str, str]:
+    """(testo visibile, testo grezzo senza tag). Il grezzo serve per le pagine
+    costruite via JavaScript, dove la descrizione sta solo nei dati della pagina."""
+    r = requests.get(url, headers={"User-Agent": BROWSER_USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
+                     timeout=15)
+    r.raise_for_status()
+    zuppa = BeautifulSoup(r.text, "html.parser")
+    for tag in zuppa(["script", "style", "noscript", "nav", "footer", "header"]):
+        tag.decompose()
+    visibile = zuppa.get_text("\n")
+    grezzo = html_lib.unescape(re.sub(r"<[^>]+>", " ", r.text))
+    grezzo = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), grezzo)  # "\u00e9" -> "é"
+    return visibile, grezzo
+
+def _annuncio_ok(offerta: dict) -> bool:
+    try:
+        visibile, grezzo = _testo_pagina(offerta["url"])
+    except Exception:
+        return True  # pagina non leggibile: nel dubbio lo teniamo
+    corpo = visibile.strip()
+    if requires_french_hard(visibile):
+        return False
+    # I dati nascosti della pagina (JSON) servono solo se la pagina visibile è
+    # quasi vuota (siti costruiti in JavaScript): altrimenti possono contenere
+    # anche altri annunci dell'azienda e far scartare quello sbagliato.
+    if len(corpo) < 1500:
+        campi = re.sub(r'\\*"\s*[,:\]\}\[\{]+\s*\\*"|\\n', "\n", grezzo)  # un campo JSON per riga
+        if requires_french_hard(campi):
+            return False
+    if len(corpo) >= 800 and LANGDETECT_OK:
+        try:
+            if detect(corpo[:5000]) == "fr":
+                return False  # descrizione scritta in francese
+        except LangDetectException:
+            pass
+    return True
+
+def controlla_descrizioni(tutte_nuove: dict) -> dict:
+    da_controllare = [(fonte, o) for fonte, offerte in tutte_nuove.items()
+                      if fonte in FONTI_SENZA_DESCRIZIONE for o in offerte]
+    if not da_controllare:
+        return tutte_nuove
+    print(f"🔎 Controllo la descrizione di {len(da_controllare)} annunci (francese richiesto?)...")
+    with ThreadPoolExecutor(max_workers=MAX_WORKER_PARALLELI) as ex:
+        esiti = list(ex.map(lambda fo: _annuncio_ok(fo[1]), da_controllare))
+    scartati = {id(o) for (f, o), ok in zip(da_controllare, esiti) if not ok}
+    print(f"   → {len(scartati)} scartati perché chiedono il francese o sono scritti in francese")
+    risultato = {}
+    for fonte, offerte in tutte_nuove.items():
+        tenute = [o for o in offerte if id(o) not in scartati]
+        if tenute:
+            risultato[fonte] = tenute
+    return risultato
 
 # ============================================================
 # 📧  GENERAZIONE EMAIL — neutra, nessuno scoring, per fonte
@@ -973,7 +1162,7 @@ def conta_ruoli_target(tutte_nuove: dict) -> int:
     return sum(matcha_job_title_target(o.get("titolo", ""))
                for offerte in tutte_nuove.values() for o in offerte)
 
-def genera_html(tutte_nuove: dict, totale_trovate: int):
+def genera_html(tutte_nuove: dict, totale_trovate: int, avvisi: list | None = None):
     oggi_str = _data_italiana(datetime.now())
     totale = sum(len(v) for v in tutte_nuove.values())
     n_target = conta_ruoli_target(tutte_nuove)
@@ -1028,6 +1217,13 @@ def genera_html(tutte_nuove: dict, totale_trovate: int):
         body = sezioni
 
     riga_target = f" · di cui <strong>{n_target}</strong> 🎯 ruoli target" if n_target else ""
+    box_avvisi = ""
+    if avvisi:
+        voci = "".join(f'<li style="margin:2px 0;">{_e(a)}</li>' for a in avvisi)
+        box_avvisi = (f'<div style="background:#fff7ed;border:1px solid #fdba74;border-radius:8px;'
+                      f'padding:10px 14px;margin:0 0 16px;font-size:13px;color:#7c2d12;">'
+                      f'<strong>⚠️ Fonti con problemi oggi</strong>'
+                      f'<ul style="margin:6px 0 0;padding-left:18px;">{voci}</ul></div>')
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"></head>
@@ -1045,7 +1241,7 @@ def genera_html(tutte_nuove: dict, totale_trovate: int):
       🆕 <strong>{totale} nuov{'o annuncio' if totale==1 else 'i annunci'}</strong>{riga_target}
       <div style="font-size:12px;color:#4b6a8f;margin-top:2px;">{totale_trovate} annunci compatibili analizzati</div>
     </div>
-    <div style="background:#f8f9fa;padding:20px 14px;">{body}</div>
+    <div style="background:#f8f9fa;padding:20px 14px;">{box_avvisi}{body}</div>
     <div style="background:#0d1b2a;border-radius:0 0 12px 12px;padding:13px;
                 text-align:center;font-size:11px;color:#4a6fa5;">
       Lista neutra, nessun ordinamento per rilevanza · {oggi_str}
@@ -1053,12 +1249,14 @@ def genera_html(tutte_nuove: dict, totale_trovate: int):
   </div>
 </body></html>""", totale
 
-def genera_testo(tutte_nuove: dict, totale_trovate: int) -> str:
+def genera_testo(tutte_nuove: dict, totale_trovate: int, avvisi: list | None = None) -> str:
     """Versione solo testo della mail: la leggono i client che non mostrano
     l'HTML, e averla migliora la consegna (meno probabilità di finire in spam)."""
     righe = [f"PARIS JOB NEWSLETTER — {_data_italiana(datetime.now())}", ""]
     totale = sum(len(v) for v in tutte_nuove.values())
     righe.append(f"{totale} nuovi annunci su {totale_trovate} analizzati")
+    if avvisi:
+        righe += ["", "ATTENZIONE - fonti con problemi oggi:"] + [f"- {a}" for a in avvisi]
     for fonte, offerte in tutte_nuove.items():
         if not offerte:
             continue
@@ -1141,16 +1339,19 @@ def media_storica_per_fonte(storico: list, nome_fonte: str) -> float | None:
         return None
     return sum(valori) / len(valori)
 
-def health_check(nome_fonte: str, risultati: int, storico_medio: float | None = None):
+def health_check(nome_fonte: str, risultati: int, storico_medio: float | None = None) -> str | None:
+    """Restituisce un avviso da mostrare nella mail (o None se tutto normale)."""
+    avviso = None
     if risultati == 0 and storico_medio and storico_medio > 1:
-        print(f"⚠️  ALERT: {nome_fonte} ha trovato 0 risultati (media storica ~{storico_medio:.1f} "
-              f"negli ultimi {GIORNI_STORICO_MEDIA} giorni). Probabile rottura selettori/API "
-              f"— verificare manualmente.")
+        avviso = (f"{nome_fonte}: 0 annunci oggi (di solito ~{storico_medio:.0f}). "
+                  f"Probabile cambio del sito o blocco: va controllato.")
     elif storico_medio and storico_medio > 3 and risultati < storico_medio * 0.3:
-        # Calo forte (sotto il 30% della media) ma non a zero: segnale più debole,
-        # comunque utile da vedere nel log invece di passare inosservato.
-        print(f"⚠️  Nota: {nome_fonte} ha trovato solo {risultati} risultati, "
-              f"ben sotto la media storica (~{storico_medio:.1f}). Da tenere d'occhio.")
+        # Calo forte (sotto il 30% della media) ma non a zero: segnale più debole.
+        avviso = (f"{nome_fonte}: solo {risultati} annunci oggi (di solito ~{storico_medio:.0f}). "
+                  f"Da tenere d'occhio.")
+    if avviso:
+        print(f"⚠️  {avviso}")
+    return avviso
 
 # ============================================================
 # 🚀  MAIN
@@ -1167,6 +1368,10 @@ def main():
         print(f"🔄 Aggiorno il formato di seen_jobs.json per: {', '.join(da_migrare)} "
               f"(senza rimandare annunci già ricevuti)")
     storico = carica_storico()
+    aziende_note = carica_aziende_note()
+    prima_volta_note = aziende_note is None
+    if prima_volta_note:
+        aziende_note = {}
 
     scrapers = [
         ("Greenhouse", scrape_greenhouse),
@@ -1179,31 +1384,50 @@ def main():
 
     tutte_trovate = {}
     tutte_nuove = {}
+    avvisi = []
 
     for nome, fn in scrapers:
         try:
             offerte = fn()
             tutte_trovate[nome] = offerte
             media = media_storica_per_fonte(storico, nome)
-            health_check(nome, len(offerte), media)
+            avviso = health_check(nome, len(offerte), media)
+            if avviso:
+                avvisi.append(avviso)
             if offerte:
                 prima_volta = nome not in fonti_migrate
                 if prima_volta and nome not in FONTI_STORICHE:
                     print(f"   🆕 Primo run di {nome}: mostro solo gli annunci degli ultimi "
                           f"{GIORNI_PRIMO_RUN_FONTE_NUOVA} giorni")
+                aziende_oggi = {o.get("azienda_id") for o in offerte if o.get("azienda_id")}
+                note = aziende_note.setdefault(nome, set())
+                # Senza storico (primo run con questa funzione) nessuna azienda è "nuova".
+                aziende_nuove = set() if prima_volta_note or not note else aziende_oggi - note
+                if aziende_nuove:
+                    print(f"   🆕 {len(aziende_nuove)} aziende appena aggiunte: dei loro annunci "
+                          f"mostro solo quelli degli ultimi {GIORNI_PRIMO_RUN_FONTE_NUOVA} giorni")
+                note |= aziende_oggi
                 nuove, seen = filtra_nuove(
                     nome, offerte, seen,
                     migrazione_da_v1=prima_volta and nome in FONTI_STORICHE,
-                    solo_ultimi_giorni=GIORNI_PRIMO_RUN_FONTE_NUOVA if prima_volta and nome not in FONTI_STORICHE else None)
+                    solo_ultimi_giorni=GIORNI_PRIMO_RUN_FONTE_NUOVA if prima_volta and nome not in FONTI_STORICHE else None,
+                    aziende_nuove=aziende_nuove)
                 fonti_migrate.add(nome)
                 if nuove:
                     tutte_nuove[nome] = nuove
         except Exception as e:
             print(f"   ❌ {nome}: {e}")
+            avvisi.append(f"{nome}: errore durante la lettura ({str(e)[:120]}).")
             tutte_trovate[nome] = []
         time.sleep(1)
 
     salva_seen(seen, fonti_migrate)
+    salva_slug_inattivi()
+    for nome, slugs in aziende_monitorate().items():
+        aziende_note.setdefault(nome, set()).update(slugs)
+    salva_aziende_note(aziende_note)
+    # Gli annunci scartati qui restano comunque "visti": non verranno ricontrollati.
+    tutte_nuove = controlla_descrizioni(tutte_nuove)
 
     # Aggiungiamo la riga di oggi allo storico, per i confronti dei prossimi giorni
     storico.append({
@@ -1222,8 +1446,8 @@ def main():
         print(f"   {n:24s}→ {trovate:3d} trovate · {nuove:3d} nuove")
     print(f"   {'TOTALE':24s}→ {totale_trovate:3d} trovate · {totale_nuove:3d} nuove\n")
 
-    html, totale = genera_html(tutte_nuove, totale_trovate)
-    testo = genera_testo(tutte_nuove, totale_trovate)
+    html, totale = genera_html(tutte_nuove, totale_trovate, avvisi)
+    testo = genera_testo(tutte_nuove, totale_trovate, avvisi)
     invia_email(html, testo, oggetto_email(totale, conta_ruoli_target(tutte_nuove)))
     print("\n✨ Done!\n")
 
