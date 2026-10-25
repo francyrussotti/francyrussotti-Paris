@@ -22,7 +22,8 @@ from datetime import datetime
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-import json, time, re, os, hashlib
+import json, time, re, os, hashlib, asyncio
+import html as html_lib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
@@ -33,7 +34,7 @@ except ImportError:
     print("⚠️  langdetect non trovato — filtro lingua disattivato")
 
 try:
-    from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+    from playwright.async_api import async_playwright
     PLAYWRIGHT_OK = True
 except ImportError:
     PLAYWRIGHT_OK = False
@@ -123,11 +124,6 @@ print(f"📋 Aziende monitorate: {len(GREENHOUSE_SLUGS)} Greenhouse, {len(LEVER_
       f"{len(ASHBY_SLUGS)} Ashby, {len(SMARTRECRUITERS_IDS)} SmartRecruiters, {len(WTTJ_SLUGS)} WTTJ "
       f"({sum(len(v) for v in _scoperti.values())} da auto-discovery)")
 
-WTTJ_SEARCH_URL = (
-    "https://www.welcometothejungle.com/en/jobs"
-    "?query=&page=1&aroundQuery=Paris"
-)
-
 HEADERS = {
     "User-Agent": "paris-job-newsletter/1.0 (uso personale, contatto: imposta la tua email qui)",
     "Accept": "application/json, text/html, */*",
@@ -141,17 +137,44 @@ HEADERS = {
 BROWSER_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-# Keyword che indicano un requisito HARD di francese -> annuncio scartato
-FRENCH_REQUIRED_KEYWORDS = [
-    "french required", "fluent in french", "native french",
-    "français courant", "français requis", "must speak french",
-    "french speaking required", "c1 french", "c2 french",
+# Frasi che indicano un requisito HARD di francese -> annuncio scartato.
+# Sono regex, controllate frase per frase (vedi requires_french_hard).
+_FR = r"french|fran[cç]ais"
+# "French" usato come aggettivo di altro (mercato, aziende, legge...) non
+# riguarda la lingua: "strong presence in the French market" non va scartato.
+_FR_NON_LINGUA = (
+    r"market|markets|company|companies|startup|startups|tech|ecosystem|clients?|customers?|"
+    r"government|law|legal|regulat\w*|context|entit\w*|subsidiar\w*|offices?|teams?|business|"
+    r"retail|banks?|economy|territory|public|state|administration|labou?r|tax|accounting|gaap|"
+    r"payroll|employment|social|healthcare|insurance|partners?|brands?|users?|sme|smes|scale-?ups?|"
+    r"(?:and|&|/)\s+(?:european|international|uk|us|german|spanish|italian)\s+\w+"
+)
+_FRL = rf"\b(?:{_FR})\b(?!\s+(?:{_FR_NON_LINGUA})\b)"  # "French" inteso come lingua
+_EN = r"\b(?:english|anglais)\b"
+FRENCH_REQUIRED_PATTERNS = [
+    rf"\b(fluent|fluency|fluently|native|bilingual|proficient|proficiency|excellent|perfect|"
+    rf"full professional|advanced|mother tongue)\b[^.;\n]{{0,30}}{_FRL}",
+    rf"\b(strong|professional|business)\s+(?:level\s+(?:of\s+)?|working\s+)?(?:knowledge\s+of\s+)?{_FRL}",
+    rf"{_FRL}[^.;\n]{{0,30}}\b(required|mandatory|essential|must|needed|compulsory|"
+    rf"fluency|proficiency|native|speaker|speaking|skills)\b",
+    rf"\b(speak|write|communicate)\b[^.;\n]{{0,25}}{_FRL}",
+    rf"\b(written|spoken|oral)\b[^.;\n]{{0,25}}{_FRL}",
+    rf"\b(c1|c2|b2)\b[^.;\n]{{0,25}}{_FRL}",
+    rf"{_FRL}[^.;\n]{{0,15}}\b(c1|c2|b2)\b",
+    rf"{_EN}\s*(?:and|&|/|et)\s*{_FRL}",
+    rf"{_FRL}\s*(?:and|&|/|et)\s*{_EN}",
+    r"fran[cç]ais\s+(courant|requis|indispensable|obligatoire|exig[ée]|natif)",
+    r"ma[iî]trise\s+(du|de la langue)\s+fran[cç]ais",
 ]
+_FRENCH_REQUIRED_RE = [re.compile(p, re.IGNORECASE) for p in FRENCH_REQUIRED_PATTERNS]
 
-# Keyword che indicano francese solo gradito -> NON scartare
-FRENCH_OPTIONAL_KEYWORDS = [
-    "french is a plus", "french appreciated", "bonus if you speak french",
-    "french is nice to have", "notions of french",
+# Se la stessa frase contiene uno di questi, il francese è solo gradito -> NON scartare
+FRENCH_OPTIONAL_MARKERS = [
+    "a plus", "an advantage", "advantageous", "a bonus", "bonus", "nice to have",
+    "nice-to-have", "appreciated", "preferred", "is helpful", "would be helpful",
+    "not required", "not mandatory", "not necessary", "no french", "not needed",
+    "optional", "welcome", "notions of", "basic french", "is an asset", "asset",
+    "un plus", "apprécié", "souhaité", "would help", "ideally", "desirable",
 ]
 
 # ============================================================
@@ -171,6 +194,8 @@ def http_get(url, **kw):
 # 🌍  FILTRI: lingua, location, francese
 # ============================================================
 
+TESTO_CORTO = 200  # caratteri: sotto questa soglia c'è in pratica solo il titolo
+
 def is_english(text: str) -> bool:
     """Rileva se il testo è in inglese. Se langdetect non è disponibile,
     non blocca nulla (fail-open) per non perdere annunci per un problema tecnico.
@@ -180,10 +205,12 @@ def is_english(text: str) -> bool:
     erroneamente titoli francesi come inglese. Aggiungiamo un controllo
     euristico su segnali francesi molto specifici come rete di sicurezza
     aggiuntiva quando il testo è corto."""
+    # Euristica solo sui testi corti: su una descrizione intera in inglese
+    # basta un "résumé" o "Banque de France" per farla sembrare francese.
+    if len((text or "").strip()) < TESTO_CORTO and ha_segnali_francesi_forti(text):
+        return False
     if not LANGDETECT_OK:
         return True
-    if ha_segnali_francesi_forti(text):
-        return False
     try:
         return detect(text[:1500]) == "en"
     except LangDetectException:
@@ -211,20 +238,41 @@ def is_paris_location(location: str) -> bool:
                        "la défense", "la defense", "neuilly-sur-seine", "boulogne-billancourt"]
     return any(kw in loc for kw in keyword_parigi) or loc.strip() == "fr"
 
+def pulisci_html(testo: str) -> str:
+    """Toglie i tag HTML dalle descrizioni (Greenhouse le manda come HTML
+    con entità escapate, es. '&lt;p&gt;'). Il testo pulito serve sia al
+    rilevamento lingua sia al filtro francese."""
+    if not testo or "<" not in testo and "&" not in testo:
+        return testo or ""
+    testo = html_lib.unescape(testo)
+    # A capo solo dopo i blocchi (paragrafi, elenchi...), non dopo <strong>/<a>:
+    # "Fluent <strong>French</strong> required" deve restare una frase sola.
+    testo = re.sub(r"(?i)(</(p|li|div|h[1-6]|ul|ol|tr)>|<br\s*/?>)", r"\1\n", testo)
+    return BeautifulSoup(testo, "html.parser").get_text()
+
+def _frasi(testo: str) -> list[str]:
+    return [f for f in re.split(r"(?<=[.!?;])\s+|\n+|•", testo) if f.strip()]
+
 def requires_french_hard(text: str) -> bool:
     """True solo se il francese è un requisito esplicito e vincolante.
-    Menzioni tipo 'French is a plus' NON fanno scartare l'annuncio."""
-    t = (text or "").lower()
-    if any(kw in t for kw in FRENCH_OPTIONAL_KEYWORDS):
-        # se è esplicitamente 'nice to have', non consideriamo hard anche se
-        # altre frasi generiche menzionano 'french' altrove nel testo
-        pass
-    return any(kw in t for kw in FRENCH_REQUIRED_KEYWORDS)
+    Il controllo è per singola frase: 'Fluent French is a plus' NON fa
+    scartare l'annuncio, 'Fluent French required' sì."""
+    if not re.search(_FR, text or "", re.IGNORECASE):
+        return False
+    for frase in _frasi(text):
+        if not any(rx.search(frase) for rx in _FRENCH_REQUIRED_RE):
+            continue
+        f = frase.lower()
+        if any(m in f for m in FRENCH_OPTIONAL_MARKERS):
+            continue
+        return True
+    return False
 
 def passa_filtri(titolo: str, location: str, descrizione: str) -> bool:
     if not is_paris_location(location):
         return False
-    testo_completo = f"{titolo} {descrizione}"
+    descrizione = pulisci_html(descrizione)
+    testo_completo = f"{titolo}\n{descrizione}"
     if not is_english(testo_completo):
         return False
     if requires_french_hard(testo_completo):
@@ -256,35 +304,53 @@ def job_id(azienda: str, offerta: dict) -> str:
     )
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
-def carica_seen() -> set:
+# Versione del formato degli ID in seen_jobs.json.
+# v1 (vecchio): l'ID usava il nome della FONTE ("Greenhouse") al posto
+#   dell'azienda → "Software Engineer, Paris" di Stripe e di Datadog avevano
+#   lo stesso ID e il secondo non arrivava mai nella mail.
+# v2: l'ID usa il nome dell'azienda.
+SEEN_VERSIONE = 2
+
+def carica_seen() -> tuple[set, int]:
     if os.path.exists(SEEN_FILE):
         try:
             with open(SEEN_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             ids = set(data.get("ids", []))
-            print(f"📂 Caricati {len(ids)} ID già visti")
-            return ids
+            versione = data.get("versione", 1)
+            print(f"📂 Caricati {len(ids)} ID già visti (formato v{versione})")
+            return ids, versione
         except Exception as e:
             print(f"⚠️  Errore lettura {SEEN_FILE}: {e}")
     else:
         print(f"📂 {SEEN_FILE} non trovato — prima esecuzione")
-    return set()
+    return set(), SEEN_VERSIONE
 
 def salva_seen(seen: set):
     try:
         with open(SEEN_FILE, "w", encoding="utf-8") as f:
-            json.dump({"ids": sorted(seen), "aggiornato": datetime.now().isoformat()}, f, indent=2)
+            json.dump({"versione": SEEN_VERSIONE, "ids": sorted(seen),
+                       "aggiornato": datetime.now().isoformat()}, f, indent=2)
         print(f"💾 Salvati {len(seen)} ID")
     except Exception as e:
         print(f"⚠️  Errore scrittura {SEEN_FILE}: {e}")
 
-def filtra_nuove(azienda: str, offerte: list, seen: set) -> tuple[list, set]:
+def filtra_nuove(nome_fonte: str, offerte: list, seen: set,
+                 migrazione_da_v1: bool = False) -> tuple[list, set]:
+    """Separa gli annunci nuovi da quelli già visti.
+
+    Al primo run dopo l'aggiornamento (migrazione_da_v1) un annuncio il cui
+    vecchio ID v1 è già in seen viene considerato già visto: così non ti
+    arriva una mail con tutti gli annunci già ricevuti."""
     nuove, nuovi_ids = [], set()
     for o in offerte:
-        jid = job_id(azienda, o)
-        if jid not in seen:
-            nuove.append(o)
-            nuovi_ids.add(jid)
+        jid = job_id(o.get("azienda_id") or o.get("azienda", ""), o)
+        if jid in seen or jid in nuovi_ids:
+            continue
+        nuovi_ids.add(jid)
+        if migrazione_da_v1 and job_id(nome_fonte, o) in seen:
+            continue  # già ricevuto col vecchio formato: registra solo il nuovo ID
+        nuove.append(o)
     seen_aggiornato = seen | nuovi_ids
     print(f"   → {len(offerte)} trovate · {len(nuove)} nuove · {len(offerte)-len(nuove)} già viste")
     return nuove, seen_aggiornato
@@ -293,11 +359,37 @@ def filtra_nuove(azienda: str, offerte: list, seen: set) -> tuple[list, set]:
 # 🏷️  UTILITY — nome azienda leggibile da uno slug
 # ============================================================
 
+# Nomi scritti bene per gli slug che la regola automatica sbaglierebbe.
+# Aggiungine pure: chiave = slug esatto, valore = nome da mostrare nella mail.
+NOMI_AZIENDE = {
+    "mistral.ai": "Mistral AI", "polyai": "PolyAI", "humeai": "Hume AI",
+    "arizeai": "Arize AI", "gleanwork": "Glean", "grafanalabs": "Grafana Labs",
+    "cockroachlabs": "Cockroach Labs", "coreweave": "CoreWeave", "gitlab": "GitLab",
+    "jetbrains": "JetBrains", "elevenlabs": "ElevenLabs", "posthog": "PostHog",
+    "n8n": "n8n", "openai": "OpenAI", "hubspot": "HubSpot", "linkedin": "LinkedIn",
+    "github": "GitHub", "paypal": "PayPal", "doctolib": "Doctolib",
+    "backmarket": "Back Market", "blablacar": "BlaBlaCar", "alan": "Alan",
+}
+
+_SIGLE = {"ai": "AI", "io": "IO", "hr": "HR", "ia": "IA", "sas": "SAS", "it": "IT"}
+
 def slug_a_nome_leggibile(slug: str) -> str:
-    """Trasforma uno slug tecnico (es. 'mistral.ai', 'welcome-to-the-jungle')
-    in un nome leggibile (es. 'Mistral Ai', 'Welcome To The Jungle')."""
-    pulito = slug.replace(".", " ").replace("-", " ").replace("_", " ")
-    return pulito.title()
+    """Trasforma uno slug tecnico in un nome leggibile:
+    'mistral.ai' → 'Mistral AI', 'payplug-1' → 'Payplug',
+    'welcome-to-the-jungle' → 'Welcome To The Jungle'."""
+    if slug in NOMI_AZIENDE:
+        return NOMI_AZIENDE[slug]
+    pulito = re.sub(r"[-_]\d+$", "", slug)                  # 'payplug-1' → 'payplug'
+    pulito = re.sub(r"\.(com|co|io|fr|eu|app|so)$", "", pulito)  # domini senza significato
+    parole = re.split(r"[.\-_\s]+", pulito)
+    return " ".join(_SIGLE.get(p.lower(), p.capitalize()) for p in parole if p)
+
+def _con_azienda(offerta: dict, slug: str, nome: str) -> dict:
+    """Aggiunge nome da mostrare e chiave stabile per la dedup. La chiave è
+    lo slug, così se cambia il nome mostrato l'annuncio non ricompare."""
+    offerta["azienda"] = nome
+    offerta["azienda_id"] = slug
+    return offerta
 
 # ============================================================
 # 🏢  SCRAPER 1 — Greenhouse (API JSON pubblica)
@@ -324,21 +416,21 @@ def scrape_greenhouse():
         r = http_get(url)
         if not r:
             return []
-        azienda = slug_a_nome_leggibile(slug)
         offerte = []
         for job in r.json().get("jobs", []):
+            azienda = job.get("company_name") or slug_a_nome_leggibile(slug)
             titolo = job.get("title", "")
             location = job.get("location", {}).get("name", "")
             descrizione = job.get("content", "")
             if not passa_filtri(titolo, location, descrizione):
                 continue
-            offerte.append({
+            offerte.append(_con_azienda({
                 "titolo": titolo,
                 "azienda": azienda,
                 "location": location,
                 "url": job.get("absolute_url", ""),
                 "data": job.get("updated_at", "")[:10],
-            })
+            }, slug, azienda))
         return offerte
 
     risultati = _esegui_in_parallelo(GREENHOUSE_SLUGS, per_azienda)
@@ -372,13 +464,13 @@ def scrape_lever():
                     data = datetime.fromtimestamp(int(ts) / 1000).strftime("%Y-%m-%d")
                 except Exception:
                     pass
-            offerte.append({
+            offerte.append(_con_azienda({
                 "titolo": titolo,
                 "azienda": azienda,
                 "location": location,
                 "url": job.get("hostedUrl", ""),
                 "data": data,
-            })
+            }, slug, azienda))
         return offerte
 
     risultati = _esegui_in_parallelo(LEVER_SLUGS, per_azienda)
@@ -405,13 +497,13 @@ def scrape_ashby():
             descrizione = job.get("descriptionPlain", "") or job.get("descriptionHtml", "")
             if not passa_filtri(titolo, location, descrizione):
                 continue
-            offerte.append({
+            offerte.append(_con_azienda({
                 "titolo": titolo,
                 "azienda": azienda,
                 "location": location,
                 "url": job.get("jobUrl", "") or job.get("applyUrl", ""),
                 "data": (job.get("publishedAt", "") or "")[:10],
-            })
+            }, slug, azienda))
         return offerte
 
     risultati = _esegui_in_parallelo(ASHBY_SLUGS, per_azienda)
@@ -453,13 +545,13 @@ def scrape_smartrecruiters():
                 continue  # lingua esplicitamente dichiarata non-inglese: scarta senza ambiguità
             if not passa_filtri(titolo, location, descrizione):
                 continue
-            offerte.append({
+            offerte.append(_con_azienda({
                 "titolo": titolo,
                 "azienda": azienda,
                 "location": location,
                 "url": f"https://jobs.smartrecruiters.com/{company_id}/{job.get('id','')}",
                 "data": (job.get("releasedDate", "") or "")[:10],
-            })
+            }, company_id, azienda))
         return offerte
 
     risultati = _esegui_in_parallelo(SMARTRECRUITERS_IDS, per_azienda)
@@ -470,41 +562,104 @@ def scrape_smartrecruiters():
 # 🏢  SCRAPER 3 — Welcome to the Jungle (HTML + fallback Playwright)
 # ============================================================
 
-def _wttj_static() -> str | None:
-    r = http_get(WTTJ_SEARCH_URL)
-    return r.text if r else None
+WTTJ_BASE_URL = "https://www.welcometothejungle.com"
+WTTJ_PAGINE_PARALLELE = 4   # pagine aperte insieme: abbastanza per andare ~4x più veloci,
+                            # poche per non sembrare un attacco al sito
+WTTJ_SOGLIA_FALLIMENTI = 15 # fallimenti di fila oltre cui ci fermiamo (probabile blocco)
 
-def _wttj_playwright() -> str | None:
-    if not PLAYWRIGHT_OK:
-        return None
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-            ctx = browser.new_context(user_agent=BROWSER_USER_AGENT, locale="en-US")
-            page = ctx.new_page()
-            page.goto(WTTJ_SEARCH_URL, wait_until="networkidle", timeout=45_000)
+# Immagini, font e video non servono per leggere gli annunci: bloccarli rende
+# ogni pagina molto più leggera e fa arrivare prima lo stato "networkidle".
+_RISORSE_INUTILI = {"image", "font", "media"}
+
+async def _wttj_async(slugs: list) -> tuple[list, int]:
+    risultati = []
+    stato = {"fallimenti_consecutivi": 0, "stop": False, "saltate": 0}
+    coda: asyncio.Queue = asyncio.Queue()
+    for s in slugs:
+        coda.put_nowait(s)
+
+    async def blocca_risorse(route):
+        if route.request.resource_type in _RISORSE_INUTILI:
+            await route.abort()
+        else:
+            await route.continue_()
+
+    async def worker(context):
+        page = await context.new_page()
+        banner_gestito = False
+        while True:
             try:
-                page.wait_for_selector("a[href*='/en/companies/']", timeout=15_000)
-            except PWTimeout:
-                pass
-            html = page.content()
-            browser.close()
-            return html
-    except Exception as e:
-        print(f"    ⚠️  Playwright WTTJ error: {e}")
-        return None
+                slug = coda.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if stato["stop"]:
+                stato["saltate"] += 1
+                continue
+            try:
+                await page.goto(f"{WTTJ_BASE_URL}/en/companies/{slug}",
+                                wait_until="networkidle", timeout=15_000)
+                if not banner_gestito:
+                    # Il banner cookie compare solo alla prima visita di ogni pagina.
+                    for testo in ("OK for me", "No, thanks"):
+                        try:
+                            await page.click(f"text={testo}", timeout=2500)
+                            break
+                        except Exception:
+                            pass
+                    banner_gestito = True
+                await page.wait_for_timeout(1500)
+                jobs = await page.eval_on_selector_all(
+                    "[data-testid^='job-thumb-']",
+                    "els => els.map(e => ({text: e.innerText, "
+                    "href: e.querySelector('a') ? e.querySelector('a').href : "
+                    "(e.closest('a') ? e.closest('a').href : null)}))"
+                )
+                stato["fallimenti_consecutivi"] = 0
+            except Exception as e:
+                print(f"    ⚠️  {slug}: {str(e).splitlines()[0]}")
+                stato["fallimenti_consecutivi"] += 1
+                if stato["fallimenti_consecutivi"] >= WTTJ_SOGLIA_FALLIMENTI and not stato["stop"]:
+                    stato["stop"] = True
+                    print(f"    ⚠️  {WTTJ_SOGLIA_FALLIMENTI} fallimenti consecutivi — probabile blocco/"
+                          f"rate-limit del sito. Mi fermo qui, le aziende rimaste verranno "
+                          f"riprese al prossimo run.")
+                continue
+
+            azienda = slug_a_nome_leggibile(slug)
+            for job in jobs:
+                righe = [r.strip() for r in (job.get("text") or "").split("\n") if r.strip()]
+                if not righe or not job.get("href"):
+                    continue
+                titolo = righe[0]
+                location = righe[2] if len(righe) > 2 else ""
+                if not passa_filtri(titolo, location, ""):
+                    continue
+                risultati.append(_con_azienda({
+                    "titolo": titolo,
+                    "azienda": azienda,
+                    "location": location,
+                    "url": job["href"],
+                    "data": "",
+                }, slug, azienda))
+            await asyncio.sleep(0.5)
+        await page.close()
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        context = await browser.new_context(user_agent=BROWSER_USER_AGENT, locale="en-US")
+        await context.route("**/*", blocca_risorse)
+        await asyncio.gather(*(worker(context) for _ in range(WTTJ_PAGINE_PARALLELE)))
+        await browser.close()
+    return risultati, stato["saltate"]
 
 def scrape_wttj():
-    """Scraping WTTJ per singola azienda (pagina profilo), non più via ricerca
-    globale (verificata inaffidabile). Usa gli slug reali raccolti dall'auto-
-    discovery (jobs.stationf.co + pagina companies di WTTJ stessa), verificati
-    dal vivo: struttura [data-testid^='job-thumb-'], titolo=prima riga,
-    location=terza riga del testo della card.
+    """Scraping WTTJ per singola azienda (pagina profilo), usando gli slug
+    raccolti dall'auto-discovery. Struttura verificata dal vivo:
+    [data-testid^='job-thumb-'], titolo=prima riga, location=terza riga.
 
-    PRIORITÀ: la mail deve sempre arrivare, con dati completi. Nessun limite
-    di tempo qui: se il sito risponde (anche lento), si aspetta quanto serve.
-    L'unica protezione è contro un blocco vero (troppi fallimenti di fila),
-    perché lì aspettare non aiuta — il sito non risponderà comunque."""
+    Le pagine vengono aperte WTTJ_PAGINE_PARALLELE alla volta (prima era una
+    alla volta: ~70 minuti per 521 aziende). Se il sito inizia a rifiutare
+    troppe richieste di fila ci fermiamo: aspettare non aiuterebbe."""
     print("🔍 Welcome to the Jungle...")
     if not PLAYWRIGHT_OK:
         print("   → Playwright non disponibile, fonte saltata")
@@ -513,77 +668,17 @@ def scrape_wttj():
         print("   → nessuno slug WTTJ disponibile (serve prima far girare l'auto-discovery)")
         return []
 
-    slugs_da_processare = WTTJ_SLUGS
-
-    risultati = []
-    fallimenti_consecutivi = 0
-    SOGLIA_FALLIMENTI = 15  # se ne accumuliamo tanti di fila, probabile blocco/rate-limit: ci fermiamo
-    aziende_saltate = 0
+    inizio = time.time()
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-            page = browser.new_page(user_agent=BROWSER_USER_AGENT)
-            banner_gestito = False
-            for i, slug in enumerate(slugs_da_processare):
-                if fallimenti_consecutivi >= SOGLIA_FALLIMENTI:
-                    aziende_saltate = len(slugs_da_processare) - i
-                    print(f"    ⚠️  {SOGLIA_FALLIMENTI} fallimenti consecutivi — probabile blocco/rate-limit "
-                          f"da parte del sito. Mi fermo qui invece di continuare a sbattere la testa "
-                          f"({aziende_saltate} aziende non controllate in questo run, "
-                          f"verranno riprese al prossimo).")
-                    break
-                try:
-                    page.goto(f"https://www.welcometothejungle.com/en/companies/{slug}",
-                               wait_until="networkidle", timeout=15_000)  # 15s invece di 30: fallisce prima se il sito è lento
-                    if not banner_gestito:
-                        # Il banner cookie compare solo alla prima visita della sessione;
-                        # una volta chiuso, resta chiuso per il resto del browser.
-                        try:
-                            page.click("text=OK for me", timeout=3000)
-                        except Exception:
-                            try:
-                                page.click("text=No, thanks", timeout=2000)
-                            except Exception:
-                                pass
-                        banner_gestito = True
-                    page.wait_for_timeout(2000)
-                    jobs = page.eval_on_selector_all(
-                        "[data-testid^='job-thumb-']",
-                        "els => els.map(e => ({text: e.innerText, "
-                        "href: e.querySelector('a') ? e.querySelector('a').href : "
-                        "(e.closest('a') ? e.closest('a').href : null)}))"
-                    )
-                    fallimenti_consecutivi = 0  # successo: resetta il contatore
-                except Exception as e:
-                    print(f"    ⚠️  {slug}: {e}")
-                    fallimenti_consecutivi += 1
-                    continue
-
-                azienda = slug_a_nome_leggibile(slug)
-                for job in jobs:
-                    righe = [r.strip() for r in job.get("text", "").split("\n") if r.strip()]
-                    if not righe or not job.get("href"):
-                        continue
-                    titolo = righe[0]
-                    location = righe[2] if len(righe) > 2 else ""
-                    if not passa_filtri(titolo, location, ""):
-                        continue
-                    risultati.append({
-                        "titolo": titolo,
-                        "azienda": azienda,
-                        "location": location,
-                        "url": job["href"],
-                        "data": "",
-                    })
-                time.sleep(0.5)
-            browser.close()
+        risultati, saltate = asyncio.run(_wttj_async(WTTJ_SLUGS))
     except Exception as e:
         print(f"   ⚠️  Errore generale WTTJ: {e}")
-
-    if aziende_saltate:
-        print(f"   [nota] {aziende_saltate} aziende non controllate in questo run "
+        return []
+    if saltate:
+        print(f"   [nota] {saltate} aziende non controllate in questo run "
               f"per il circuit breaker — verranno riprese al prossimo run.")
-    print(f"   → {len(risultati)} offerte compatibili trovate")
+    print(f"   → {len(risultati)} offerte compatibili trovate "
+          f"({len(WTTJ_SLUGS)} aziende in {(time.time()-inizio)/60:.1f} min)")
     return risultati
 
 # ============================================================
@@ -617,9 +712,27 @@ def ordina_neutro(offerte: list) -> list:
     alfabetico. Nessun giudizio di rilevanza o priorità."""
     return sorted(offerte, key=lambda o: (o.get("data", ""), o.get("titolo", "")), reverse=True)
 
+_MESI = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio",
+         "agosto", "settembre", "ottobre", "novembre", "dicembre"]
+
+def _data_italiana(d: datetime) -> str:
+    return f"{d.day} {_MESI[d.month - 1]} {d.year}"
+
+def _e(testo) -> str:
+    """Escape HTML: un titolo con '&' o '<' non deve rompere l'email."""
+    return html_lib.escape(str(testo or ""), quote=True)
+
+def _url_sicuro(url: str) -> str:
+    return url if (url or "").startswith(("http://", "https://")) else "#"
+
+def conta_ruoli_target(tutte_nuove: dict) -> int:
+    return sum(matcha_job_title_target(o.get("titolo", ""))
+               for offerte in tutte_nuove.values() for o in offerte)
+
 def genera_html(tutte_nuove: dict, totale_trovate: int):
-    oggi_str = datetime.now().strftime("%d %B %Y")
+    oggi_str = _data_italiana(datetime.now())
     totale = sum(len(v) for v in tutte_nuove.values())
+    n_target = conta_ruoli_target(tutte_nuove)
     sezioni = ""
 
     for fonte, offerte in tutte_nuove.items():
@@ -628,32 +741,33 @@ def genera_html(tutte_nuove: dict, totale_trovate: int):
         bg, fg = FONTE_COLORS.get(fonte, ("#1a1a2e", "#ffffff"))
         righe = ""
         for o in ordina_neutro(offerte):
-            azienda_riga = f'<div style="font-size:13px;font-weight:600;color:#444;margin-bottom:2px;">🏢 {o.get("azienda", "N/D")}</div>'
-            loc = f'<span style="color:#888;">📍 {o["location"]}</span>&ensp;' if o.get("location") else ""
-            data = f'<span style="color:#aaa;">📅 {o["data"]}</span>' if o.get("data") else ""
-            # Badge puramente informativo, nessun impatto su ordinamento o filtro:
-            # segnala solo che il titolo si avvicina ai job title emersi dal
-            # percorso di orientamento, la valutazione resta all'utente.
+            azienda_riga = (f'<div style="font-size:13px;font-weight:600;color:#444;margin-bottom:2px;">'
+                            f'🏢 {_e(o.get("azienda") or "N/D")}</div>')
+            loc = f'<span style="color:#888;">📍 {_e(o["location"])}</span>&ensp;' if o.get("location") else ""
+            data = f'<span style="color:#aaa;">📅 {_e(o["data"])}</span>' if o.get("data") else ""
+            # Badge puramente informativo, nessun impatto su ordinamento o filtro.
             badge = ('<span style="background:#e0e7ff;color:#3730a3;font-size:10px;'
-                     'font-weight:700;padding:2px 6px;border-radius:4px;margin-left:6px;">'
-                     '🎯 ruolo target</span>') if matcha_job_title_target(o.get("titolo", "")) else ""
+                     'font-weight:700;padding:2px 6px;border-radius:4px;margin-left:6px;'
+                     'white-space:nowrap;">🎯 ruolo target</span>') if matcha_job_title_target(o.get("titolo", "")) else ""
             righe += f"""
             <tr>
               <td style="padding:11px 16px;border-bottom:1px solid #f0f0f0;">
                 {azienda_riga}
-                <a href="{o['url']}" style="color:#1a1a2e;font-weight:600;text-decoration:none;
-                   font-size:14px;line-height:1.4;display:block;">{o['titolo']}{badge}</a>
+                <a href="{_e(_url_sicuro(o.get('url', '')))}" style="color:#1a1a2e;font-weight:600;text-decoration:none;
+                   font-size:14px;line-height:1.4;">{_e(o['titolo'])}</a>{badge}
                 <div style="margin-top:3px;font-size:12px;">{loc}{data}</div>
               </td>
             </tr>"""
         sezioni += f"""
         <div style="margin-bottom:24px;border-radius:8px;overflow:hidden;
                     box-shadow:0 2px 8px rgba(0,0,0,.08);">
-          <div style="background:{bg};padding:11px 16px;display:flex;
-                      justify-content:space-between;align-items:center;">
-            <span style="color:{fg};font-size:16px;font-weight:700;">{fonte}</span>
-            <span style="color:{fg};font-size:12px;opacity:.8;">{len(offerte)} nuov{'a' if len(offerte)==1 else 'e'}</span>
-          </div>
+          <table width="100%" cellpadding="0" cellspacing="0" style="background:{bg};">
+            <tr>
+              <td style="padding:11px 16px;color:{fg};font-size:16px;font-weight:700;">{_e(fonte)}</td>
+              <td style="padding:11px 16px;color:{fg};font-size:12px;text-align:right;">
+                {len(offerte)} nuov{'o' if len(offerte)==1 else 'i'}</td>
+            </tr>
+          </table>
           <table width="100%" cellpadding="0" cellspacing="0" style="background:#fff;">{righe}</table>
         </div>"""
 
@@ -667,12 +781,13 @@ def genera_html(tutte_nuove: dict, totale_trovate: int):
     else:
         body = sezioni
 
+    riga_target = f" · di cui <strong>{n_target}</strong> 🎯 ruoli target" if n_target else ""
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="margin:0;padding:0;background:#f0f2f5;font-family:'Segoe UI',Helvetica,Arial,sans-serif;">
   <div style="max-width:640px;margin:28px auto;padding:0 12px;">
-    <div style="background:linear-gradient(135deg,#0d1b2a,#1b3a5c);
+    <div style="background:#0d1b2a;background:linear-gradient(135deg,#0d1b2a,#1b3a5c);
                 border-radius:12px 12px 0 0;padding:26px 24px 20px;text-align:center;">
       <div style="font-size:34px;margin-bottom:6px;">🗼</div>
       <h1 style="color:#fff;margin:0;font-size:21px;letter-spacing:1px;">PARIS JOB NEWSLETTER</h1>
@@ -681,7 +796,8 @@ def genera_html(tutte_nuove: dict, totale_trovate: int):
     <div style="background:#dbeafe;padding:11px 20px;
                 border-left:4px solid #2563eb;border-right:4px solid #2563eb;
                 text-align:center;font-size:14px;color:#1e3a5f;">
-      🆕 <strong>{totale} nuovi annunci</strong> su {totale_trovate} totali analizzati
+      🆕 <strong>{totale} nuov{'o annuncio' if totale==1 else 'i annunci'}</strong>{riga_target}
+      <div style="font-size:12px;color:#4b6a8f;margin-top:2px;">{totale_trovate} annunci compatibili analizzati</div>
     </div>
     <div style="background:#f8f9fa;padding:20px 14px;">{body}</div>
     <div style="background:#0d1b2a;border-radius:0 0 12px 12px;padding:13px;
@@ -691,26 +807,53 @@ def genera_html(tutte_nuove: dict, totale_trovate: int):
   </div>
 </body></html>""", totale
 
+def genera_testo(tutte_nuove: dict, totale_trovate: int) -> str:
+    """Versione solo testo della mail: la leggono i client che non mostrano
+    l'HTML, e averla migliora la consegna (meno probabilità di finire in spam)."""
+    righe = [f"PARIS JOB NEWSLETTER — {_data_italiana(datetime.now())}", ""]
+    totale = sum(len(v) for v in tutte_nuove.values())
+    righe.append(f"{totale} nuovi annunci su {totale_trovate} analizzati")
+    for fonte, offerte in tutte_nuove.items():
+        if not offerte:
+            continue
+        righe += ["", f"== {fonte} ({len(offerte)}) =="]
+        for o in ordina_neutro(offerte):
+            target = " [ruolo target]" if matcha_job_title_target(o.get("titolo", "")) else ""
+            dettagli = " · ".join(x for x in (o.get("location"), o.get("data")) if x)
+            righe += [f"- {o.get('azienda', 'N/D')} — {o['titolo']}{target}",
+                      f"  {dettagli}" if dettagli else "", f"  {o.get('url', '')}"]
+    return "\n".join(r for r in righe if r is not None)
+
 # ============================================================
 # 📤  INVIO EMAIL
 # ============================================================
 
-def invia_email(html_body, totale):
+def oggetto_email(totale: int, n_target: int) -> str:
+    data = f"{datetime.now():%d/%m}"
+    if totale == 0:
+        return f"🗼 Paris Jobs {data} — nessun annuncio nuovo"
+    testo = f"🗼 Paris Jobs {data} — {totale} nuov{'o' if totale == 1 else 'i'}"
+    if n_target:
+        testo += f" ({n_target} 🎯 ruol{'o' if n_target == 1 else 'i'} target)"
+    return testo
+
+def invia_email(html_body, testo_body, oggetto):
     destinatari = [d.strip() for d in EMAIL_DESTINATARIO.split(",") if d.strip()]
     if not destinatari or not GMAIL_MITTENTE or not GMAIL_PASSWORD:
         print("⚠️  Credenziali email mancanti, salto invio (controlla i Secrets)")
         return
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"🗼 Paris Jobs {datetime.now():%d/%m/%Y} — {totale} nuovi annunci"
+    msg["Subject"] = oggetto
     msg["From"] = GMAIL_MITTENTE
     msg["To"] = ", ".join(destinatari)
+    msg.attach(MIMEText(testo_body, "plain", "utf-8"))  # prima il testo, poi l'HTML (preferito)
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
             s.login(GMAIL_MITTENTE, GMAIL_PASSWORD)
             s.sendmail(GMAIL_MITTENTE, destinatari, msg.as_string())
-        print(f"✅ Email inviata a {destinatari}")
+        print(f"✅ Email inviata a {len(destinatari)} destinatari")
     except smtplib.SMTPAuthenticationError:
         print("❌ Errore autenticazione → rigenera App Password su myaccount.google.com")
     except Exception as e:
@@ -771,7 +914,10 @@ def main():
     print(f"  PARIS JOB NEWSLETTER  {datetime.now():%d/%m/%Y %H:%M}")
     print(f"{'='*55}\n")
 
-    seen = carica_seen()
+    seen, versione_seen = carica_seen()
+    migrazione_da_v1 = versione_seen < 2
+    if migrazione_da_v1:
+        print("🔄 Aggiorno il formato di seen_jobs.json (v1 → v2), senza rimandare annunci già ricevuti")
     storico = carica_storico()
 
     scrapers = [
@@ -792,7 +938,7 @@ def main():
             media = media_storica_per_fonte(storico, nome)
             health_check(nome, len(offerte), media)
             if offerte:
-                nuove, seen = filtra_nuove(nome, offerte, seen)
+                nuove, seen = filtra_nuove(nome, offerte, seen, migrazione_da_v1)
                 if nuove:
                     tutte_nuove[nome] = nuove
         except Exception as e:
@@ -820,7 +966,8 @@ def main():
     print(f"   {'TOTALE':24s}→ {totale_trovate:3d} trovate · {totale_nuove:3d} nuove\n")
 
     html, totale = genera_html(tutte_nuove, totale_trovate)
-    invia_email(html, totale)
+    testo = genera_testo(tutte_nuove, totale_trovate)
+    invia_email(html, testo, oggetto_email(totale, conta_ruoli_target(tutte_nuove)))
     print("\n✨ Done!\n")
 
 if __name__ == "__main__":

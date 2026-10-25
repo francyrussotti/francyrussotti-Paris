@@ -39,7 +39,8 @@ da fonti pubbliche legali: Greenhouse, Lever, Welcome to the Jungle.
 - **Nessuno scoring, nessuna priorità per azienda**: la mail mostra solo dati grezzi
   (titolo, location, link, data), raggruppati per fonte. Nessun bias editoriale.
 - **Dedup robusta**: fingerprint su titolo+azienda+location normalizzati (non solo URL),
-  così le ripubblicazioni con link diverso non si ripresentano.
+  così le ripubblicazioni con link diverso non si ripresentano. L'azienda è identificata
+  dal suo slug, quindi due aziende con lo stesso titolo a Parigi restano annunci distinti.
 - **Solo fonti legali**: Greenhouse e Lever espongono API JSON pubbliche pensate per
   essere consumate esternamente. WTTJ è scraping HTML leggero con pause tra le richieste.
   Niente LinkedIn/Indeed/Glassdoor (ToS restrittivi, alto rischio ban).
@@ -48,5 +49,12 @@ da fonti pubbliche legali: Greenhouse, Lever, Welcome to the Jungle.
 
 - Se uno scraper trova 0 risultati per più run consecutive, controlla il log
   (`health_check` stampa un warning) — probabile cambio di struttura del sito.
-- Il selettore CSS di WTTJ (`a[href*='/en/companies/']`) va verificato periodicamente:
+- Il selettore CSS di WTTJ (`[data-testid^='job-thumb-']`) va verificato periodicamente:
   è la parte più fragile del progetto.
+- WTTJ apre `WTTJ_PAGINE_PARALLELE` pagine insieme (default 4). Se nel log compaiono
+  molti timeout o il circuit breaker scatta spesso, abbassa il numero.
+- **Nomi azienda**: se un nome appare scritto male nella mail, aggiungilo a
+  `NOMI_AZIENDE` in `paris_job_newsletter.py` (slug → nome giusto).
+- **Filtro francese**: le frasi che fanno scartare un annuncio sono in
+  `FRENCH_REQUIRED_PATTERNS`; quelle che lo salvano ("is a plus", "nice to have"…)
+  in `FRENCH_OPTIONAL_MARKERS`. Il controllo è frase per frase.
