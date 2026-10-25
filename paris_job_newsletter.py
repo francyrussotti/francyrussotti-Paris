@@ -234,8 +234,11 @@ def ha_segnali_francesi_forti(text: str) -> bool:
 
 def is_paris_location(location: str) -> bool:
     loc = (location or "").lower()
-    keyword_parigi = ["paris", "france", "île-de-france", "ile-de-france",
-                       "la défense", "la defense", "neuilly-sur-seine", "boulogne-billancourt"]
+    keyword_parigi = ["paris", "france", "île-de-france", "ile-de-france", "idf",
+                       "la défense", "la defense", "la-defense", "neuilly-sur-seine",
+                       "boulogne-billancourt", "issy-les-moulineaux", "levallois-perret",
+                       "saint-denis", "saint-ouen", "montreuil", "puteaux", "courbevoie",
+                       "nanterre", "clichy", "ivry-sur-seine", "vincennes"]
     return any(kw in loc for kw in keyword_parigi) or loc.strip() == "fr"
 
 def pulisci_html(testo: str) -> str:
@@ -268,8 +271,14 @@ def requires_french_hard(text: str) -> bool:
         return True
     return False
 
+# Un titolo che nomina il francese ("Account Executive - French Market",
+# "Francophone Sales") in pratica richiede di parlarlo.
+_FRANCESE_NEL_TITOLO = re.compile(r"\b(french|francophone|fran[cç]ais)\b", re.IGNORECASE)
+
 def passa_filtri(titolo: str, location: str, descrizione: str) -> bool:
     if not is_paris_location(location):
+        return False
+    if _FRANCESE_NEL_TITOLO.search(titolo or ""):
         return False
     descrizione = pulisci_html(descrizione)
     testo_completo = f"{titolo}\n{descrizione}"
@@ -315,7 +324,14 @@ SEEN_VERSIONE = 2
 # dopo un run in cui ha restituito annunci. Se una fonte salta un giorno
 # (es. sito irraggiungibile), i suoi vecchi annunci restano riconosciuti
 # col vecchio ID e non tornano come nuovi quando la fonte riprende.
-TUTTE_LE_FONTI = ["Greenhouse", "Lever", "Ashby", "SmartRecruiters", "Welcome to the Jungle"]
+# Fonti che esistevano già col vecchio formato v1 (per loro serve la migrazione).
+FONTI_STORICHE = ["Greenhouse", "Lever", "Ashby", "SmartRecruiters", "Welcome to the Jungle"]
+TUTTE_LE_FONTI = FONTI_STORICHE + ["Portfolio VC"]
+
+# Quando si aggiunge una fonte NUOVA, al primo run mostriamo solo gli annunci
+# pubblicati negli ultimi N giorni: gli altri vengono segnati come visti.
+# Senza questo, la prima mail conterrebbe centinaia di annunci tutti insieme.
+GIORNI_PRIMO_RUN_FONTE_NUOVA = 7
 
 def carica_seen() -> tuple[set, set]:
     """Restituisce (ID già visti, fonti già migrate al formato v2)."""
@@ -332,7 +348,7 @@ def carica_seen() -> tuple[set, set]:
             else:
                 # Primo run v2 (25/10/2026): WTTJ aveva restituito 0 annunci,
                 # quindi solo le altre fonti sono state migrate.
-                fonti_migrate = set(TUTTE_LE_FONTI) - {"Welcome to the Jungle"}
+                fonti_migrate = set(FONTI_STORICHE) - {"Welcome to the Jungle"}
             print(f"📂 Caricati {len(ids)} ID già visti (formato v{versione})")
             return ids, fonti_migrate
         except Exception as e:
@@ -350,13 +366,22 @@ def salva_seen(seen: set, fonti_migrate: set):
     except Exception as e:
         print(f"⚠️  Errore scrittura {SEEN_FILE}: {e}")
 
+def _troppo_vecchio(offerta: dict, giorni: int) -> bool:
+    try:
+        data = datetime.strptime(offerta.get("data", ""), "%Y-%m-%d")
+    except ValueError:
+        return True  # senza data non sappiamo se è recente: al primo run lo saltiamo
+    return (datetime.now() - data).days > giorni
+
 def filtra_nuove(nome_fonte: str, offerte: list, seen: set,
-                 migrazione_da_v1: bool = False) -> tuple[list, set]:
+                 migrazione_da_v1: bool = False,
+                 solo_ultimi_giorni: int | None = None) -> tuple[list, set]:
     """Separa gli annunci nuovi da quelli già visti.
 
-    Al primo run dopo l'aggiornamento (migrazione_da_v1) un annuncio il cui
-    vecchio ID v1 è già in seen viene considerato già visto: così non ti
-    arriva una mail con tutti gli annunci già ricevuti."""
+    migrazione_da_v1: un annuncio il cui vecchio ID v1 è già in seen viene
+      considerato già visto (niente mail con annunci già ricevuti).
+    solo_ultimi_giorni: primo run di una fonte nuova, mostra solo gli
+      annunci recenti e segna gli altri come visti."""
     nuove, nuovi_ids = [], set()
     for o in offerte:
         jid = job_id(o.get("azienda_id") or o.get("azienda", ""), o)
@@ -365,6 +390,8 @@ def filtra_nuove(nome_fonte: str, offerte: list, seen: set,
         nuovi_ids.add(jid)
         if migrazione_da_v1 and job_id(nome_fonte, o) in seen:
             continue  # già ricevuto col vecchio formato: registra solo il nuovo ID
+        if solo_ultimi_giorni is not None and _troppo_vecchio(o, solo_ultimi_giorni):
+            continue
         nuove.append(o)
     seen_aggiornato = seen | nuovi_ids
     print(f"   → {len(offerte)} trovate · {len(nuove)} nuove · {len(offerte)-len(nuove)} già viste")
@@ -582,10 +609,24 @@ WTTJ_PAGINE_PARALLELE = 4   # pagine aperte insieme: abbastanza per andare ~4x p
                             # poche per non sembrare un attacco al sito
 WTTJ_SOGLIA_FALLIMENTI = 15 # fallimenti di fila oltre cui ci fermiamo (probabile blocco)
 
-# NB: la pagina va caricata esattamente come nella versione verificata dal vivo
-# (browser.new_page con UA da browser, nessun blocco di immagini/font, nessun
-# locale forzato, attesa di 2s). Il 25/10/2026 una versione che bloccava
-# immagini/font e forzava il locale ha trovato 0 annunci su 521 aziende.
+WTTJ_MAX_PAGINE_AZIENDA = 5  # la lista annunci di un'azienda mostra 30 annunci per pagina
+_JS_LINK_ANNUNCI = "els => els.map(e => [e.href, e.innerText])"
+
+# Struttura verificata dal vivo il 25/10/2026 (WTTJ ha cambiato sito quel giorno:
+# le pagine azienda ora sono /en/companies-v1/{slug} e il vecchio blocco
+# [data-testid^='job-thumb-'] non esiste più). La pagina /en/companies/{slug}/jobs
+# elenca gli annunci come link /companies/{slug}/jobs/{titolo}_{città}[_RIF]:
+# il testo del link è il titolo, la città è nell'indirizzo.
+# La pagina va caricata come nella versione verificata: browser.new_page con UA
+# da browser, nessun blocco di immagini/font, attesa di 2s dopo il caricamento.
+
+def _citta_da_url_wttj(url: str) -> str:
+    """'.../jobs/business-developer-sdr_paris_PAYFI_kAM5w6l' -> 'Paris'."""
+    ultimo = url.split("?")[0].rstrip("/").rsplit("/", 1)[-1]
+    parti = ultimo.split("_")
+    if len(parti) > 1 and parti[1] and parti[1] == parti[1].lower():
+        return "-".join(p.capitalize() for p in parti[1].split("-"))
+    return ""
 
 async def _wttj_async(slugs: list) -> tuple[list, int]:
     risultati = []
@@ -594,6 +635,12 @@ async def _wttj_async(slugs: list) -> tuple[list, int]:
     coda: asyncio.Queue = asyncio.Queue()
     for s in slugs:
         coda.put_nowait(s)
+
+    async def leggi_pagina(page, url) -> list:
+        await page.goto(url, wait_until="networkidle", timeout=15_000)
+        await page.wait_for_timeout(2000)
+        link = await page.eval_on_selector_all("a[href*='/jobs/']", _JS_LINK_ANNUNCI)
+        return [(h, t) for h, t in link if re.search(r"/companies/[^/]+/jobs/[^/?#]+", h or "")]
 
     async def worker(browser):
         page = await browser.new_page(user_agent=BROWSER_USER_AGENT)
@@ -606,29 +653,28 @@ async def _wttj_async(slugs: list) -> tuple[list, int]:
             if stato["stop"]:
                 stato["saltate"] += 1
                 continue
+            annunci = {}
             try:
-                await page.goto(f"{WTTJ_BASE_URL}/en/companies/{slug}",
-                                wait_until="networkidle", timeout=15_000)
-                if not banner_gestito:
-                    # Il banner cookie compare solo alla prima visita di ogni pagina.
-                    for testo in ("OK for me", "No, thanks"):
-                        try:
-                            await page.click(f"text={testo}", timeout=2500)
-                            break
-                        except Exception:
-                            pass
-                    banner_gestito = True
-                await page.wait_for_timeout(2000)
-                jobs = await page.eval_on_selector_all(
-                    "[data-testid^='job-thumb-']",
-                    "els => els.map(e => ({text: e.innerText, "
-                    "href: e.querySelector('a') ? e.querySelector('a').href : "
-                    "(e.closest('a') ? e.closest('a').href : null)}))"
-                )
+                for n in range(1, WTTJ_MAX_PAGINE_AZIENDA + 1):
+                    url = f"{WTTJ_BASE_URL}/en/companies/{slug}/jobs" + (f"?page={n}" if n > 1 else "")
+                    link = await leggi_pagina(page, url)
+                    if not banner_gestito:
+                        # Il banner cookie compare solo alla prima visita di ogni pagina.
+                        for testo in ("OK for me", "No, thanks"):
+                            try:
+                                await page.click(f"text={testo}", timeout=2500)
+                                break
+                            except Exception:
+                                pass
+                        banner_gestito = True
+                    nuovi = {h: t for h, t in link if h not in annunci}
+                    annunci.update(nuovi)
+                    if len(link) < 30 or not nuovi:
+                        break
                 stato["fallimenti_consecutivi"] = 0
                 stato["pagine_ok"] += 1
-                stato["card_totali"] += len(jobs)
-                if not jobs and len(stato["esempi_vuoti"]) < 3:
+                stato["card_totali"] += len(annunci)
+                if not annunci and len(stato["esempi_vuoti"]) < 3:
                     stato["esempi_vuoti"].append(f"{slug} (titolo pagina: {await page.title()!r})")
             except Exception as e:
                 print(f"    ⚠️  {slug}: {str(e).splitlines()[0]}")
@@ -641,19 +687,16 @@ async def _wttj_async(slugs: list) -> tuple[list, int]:
                 continue
 
             azienda = slug_a_nome_leggibile(slug)
-            for job in jobs:
-                righe = [r.strip() for r in (job.get("text") or "").split("\n") if r.strip()]
-                if not righe or not job.get("href"):
-                    continue
-                titolo = righe[0]
-                location = righe[2] if len(righe) > 2 else ""
-                if not passa_filtri(titolo, location, ""):
+            for href, testo in annunci.items():
+                titolo = (testo or "").strip().split("\n")[0].strip()
+                location = _citta_da_url_wttj(href)
+                if not titolo or not passa_filtri(titolo, location, ""):
                     continue
                 risultati.append(_con_azienda({
                     "titolo": titolo,
                     "azienda": azienda,
                     "location": location,
-                    "url": job["href"],
+                    "url": href.split("?")[0],
                     "data": "",
                 }, slug, azienda))
             await asyncio.sleep(0.5)
@@ -665,7 +708,7 @@ async def _wttj_async(slugs: list) -> tuple[list, int]:
         await browser.close()
     # Diagnostica: distingue "pagine senza annunci" (selettore/caricamento rotto)
     # da "annunci trovati ma scartati dai filtri".
-    print(f"   [diagnostica] {stato['pagine_ok']} pagine caricate, {stato['card_totali']} annunci "
+    print(f"   [diagnostica] {stato['pagine_ok']} aziende caricate, {stato['card_totali']} annunci "
           f"letti prima dei filtri")
     if stato["pagine_ok"] and not stato["card_totali"]:
         print(f"   ⚠️  Nessun annuncio letto da nessuna pagina: probabile cambio di struttura "
@@ -673,9 +716,8 @@ async def _wttj_async(slugs: list) -> tuple[list, int]:
     return risultati, stato["saltate"]
 
 def scrape_wttj():
-    """Scraping WTTJ per singola azienda (pagina profilo), usando gli slug
-    raccolti dall'auto-discovery. Struttura verificata dal vivo:
-    [data-testid^='job-thumb-'], titolo=prima riga, location=terza riga.
+    """Scraping WTTJ per singola azienda (pagina /jobs dell'azienda), usando
+    gli slug raccolti dall'auto-discovery. Struttura: vedi _wttj_async.
 
     Le pagine vengono aperte WTTJ_PAGINE_PARALLELE alla volta (prima era una
     alla volta: ~70 minuti per 521 aziende). Se il sito inizia a rifiutare
@@ -701,6 +743,187 @@ def scrape_wttj():
           f"({len(WTTJ_SLUGS)} aziende in {(time.time()-inizio)/60:.1f} min)")
     return risultati
 
+
+# ============================================================
+# 🏢  SCRAPER — Portfolio dei fondi VC (Getro + Consider)
+# ============================================================
+# Molti fondi pubblicano un job board con gli annunci di tutte le aziende in
+# portafoglio. Verificati dal vivo il 25/10/2026 (vedi README per aggiungerne).
+
+# Getro: dominio del board -> (nome fondo, id collection). L'id si trova nella
+# pagina del board, nel JSON __NEXT_DATA__ ("network":{"id":...}).
+VC_GETRO = {
+    "jobs.accel.com": ("Accel", 8672),
+    "careers.atomico.com": ("Atomico", 36986),
+    "jobs.pointnine.com": ("Point Nine", 1680),
+    "jobs.headline.com": ("Headline", 3293),
+    "jobs.earlybird.com": ("Earlybird", 617),
+    "jobs.generalcatalyst.com": ("General Catalyst", 222),
+    "jobs.hvcapital.com": ("HV Capital", 234),
+    "jobs.dawncapital.com": ("Dawn Capital", 3063),
+    "jobs.insightpartners.com": ("Insight Partners", 246),
+}
+# Consider: dominio del board -> nome fondo
+VC_CONSIDER = {
+    "jobs.alven.co": "Alven",
+    "jobs.xange.vc": "XAnge",
+    "jobs.newfundcap.com": "Newfund",
+    "careers.balderton.com": "Balderton",
+    "jobs.sequoiacap.com": "Sequoia",
+    "jobs.notion.vc": "Notion Capital",
+}
+VC_MAX_PAGINE = 150  # tetto di sicurezza per board (Sequoia ha ~11.000 annunci, 100 per pagina)
+
+_JSON_HEADERS = {**HEADERS, "User-Agent": BROWSER_USER_AGENT,
+                 "Accept": "application/json", "Content-Type": "application/json"}
+
+def _data_da_timestamp(valore) -> str:
+    """Getro/Consider danno la data come secondi, millisecondi o stringa ISO."""
+    if valore in (None, ""):
+        return ""
+    try:
+        n = float(valore)
+        if n > 1e12:
+            n /= 1000
+        return datetime.fromtimestamp(n).strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        return str(valore)[:10]
+
+# Annunci che puntano a board che leggiamo già direttamente: li saltiamo,
+# altrimenti lo stesso annuncio arriverebbe due volte.
+def _gia_coperto(url: str) -> bool:
+    u = (url or "").lower()
+    regole = [
+        (r"greenhouse\.io/(?:embed/job_app\?for=)?([\w.-]+)", GREENHOUSE_SLUGS),
+        (r"jobs\.lever\.co/([\w.-]+)", LEVER_SLUGS),
+        (r"jobs\.ashbyhq\.com/([\w.%-]+)", ASHBY_SLUGS),
+        (r"smartrecruiters\.com/([\w.-]+)", SMARTRECRUITERS_IDS),
+        (r"welcometothejungle\.com/\w+/companies/([\w-]+)", WTTJ_SLUGS),
+    ]
+    for pattern, slugs in regole:
+        m = re.search(pattern, u)
+        if m and m.group(1).lower() in {s.lower() for s in slugs}:
+            return True
+    return False
+
+def _offerta_vc(titolo, azienda, location, url, data, fondo):
+    slug = re.sub(r"[^a-z0-9]+", "-", (azienda or "").lower()).strip("-") or "sconosciuta"
+    o = _con_azienda({"titolo": titolo, "location": location, "url": url, "data": data}, slug, azienda or "N/D")
+    o["via"] = fondo
+    return o
+
+def _getro_board(dominio: str, fondo: str, collection_id: int) -> list:
+    offerte = []
+    url_api = f"https://api.getro.com/api/v2/collections/{collection_id}/search/jobs"
+    headers = {**_JSON_HEADERS, "Origin": f"https://{dominio}", "Referer": f"https://{dominio}/jobs"}
+    totale = None
+    for pagina in range(VC_MAX_PAGINE):
+        body = {"hitsPerPage": 20, "page": pagina, "query": "",
+                "filters": {"page": pagina, "searchable_locations": ["Paris, France"]}}
+        try:
+            r = requests.post(url_api, headers=headers, json=body, timeout=20)
+            r.raise_for_status()
+            dati = r.json()
+        except Exception as e:
+            print(f"    ⚠️  {fondo} (Getro) pagina {pagina}: {e}")
+            break
+        risultati = dati.get("results", dati)
+        jobs = risultati.get("jobs") or []
+        totale = risultati.get("count", totale)
+        for job in jobs:
+            titolo = job.get("title", "")
+            location = ", ".join(job.get("locations") or [])
+            url = job.get("url", "")
+            if _gia_coperto(url) or not passa_filtri(titolo, location, ""):
+                continue
+            offerte.append(_offerta_vc(titolo, (job.get("organization") or {}).get("name", ""),
+                                       location, url, _data_da_timestamp(job.get("createdAt")), fondo))
+        if not jobs or (totale is not None and (pagina + 1) * 20 >= totale):
+            break
+        time.sleep(0.3)
+    print(f"    {fondo}: {totale if totale is not None else '?'} annunci a Parigi, {len(offerte)} compatibili")
+    return offerte
+
+def _con_riprova(funzione, tentativi=2):
+    """Consider a volte risponde lentamente: un secondo tentativo con più pazienza."""
+    for i in range(tentativi):
+        try:
+            return funzione(30 if i == 0 else 60)
+        except requests.RequestException:
+            if i == tentativi - 1:
+                raise
+            time.sleep(3)
+
+def _consider_board(dominio: str, fondo: str) -> list:
+    """Consider non filtra bene per città: scarichiamo tutti gli annunci del
+    board (pochi MB) e teniamo quelli di Parigi con is_paris_location."""
+    sessione = requests.Session()
+    try:
+        pagina_html = _con_riprova(lambda t: sessione.get(
+            f"https://{dominio}/jobs", headers={"User-Agent": BROWSER_USER_AGENT}, timeout=t)).text
+        token = re.search(r'csrfToken":"([^"]+)"', pagina_html).group(1)
+        board = re.search(r'"board":\{"id":"([^"]+)","isParent":(true|false)', pagina_html)
+    except Exception as e:
+        print(f"    ⚠️  {fondo} (Consider): pagina non leggibile ({e})")
+        return []
+    headers = {**_JSON_HEADERS, "x-csrf-token": token, "Origin": f"https://{dominio}", "Referer": f"https://{dominio}/jobs"}
+    meta = {"size": 100}
+    offerte, letti, totale, url_visti = [], 0, None, set()
+    for _ in range(VC_MAX_PAGINE):
+        body = {"meta": meta, "board": {"id": board.group(1), "isParent": board.group(2) == "true"},
+                "query": {}, "grouped": False}
+        try:
+            r = _con_riprova(lambda t: sessione.post(
+                f"https://{dominio}/api-boards/search-jobs", headers=headers, json=body, timeout=t))
+            r.raise_for_status()
+            dati = r.json()
+        except Exception as e:
+            print(f"    ⚠️  {fondo} (Consider): {e}")
+            break
+        jobs = dati.get("jobs") or []
+        totale = dati.get("total", totale)
+        nuovi_in_pagina = 0
+        for job in jobs:
+            url = job.get("url") or job.get("applyUrl") or ""
+            if url in url_visti:
+                continue
+            url_visti.add(url)
+            nuovi_in_pagina += 1
+            letti += 1
+            titolo = job.get("title", "")
+            location = ", ".join(job.get("locations") or [])
+            if _gia_coperto(url) or not passa_filtri(titolo, location, ""):
+                continue
+            offerte.append(_offerta_vc(titolo, job.get("companyName", ""), location, url,
+                                       _data_da_timestamp(job.get("timeStamp")), fondo))
+        sequenza = (dati.get("meta") or {}).get("sequence")
+        if not jobs or not nuovi_in_pagina or not sequenza or (totale is not None and letti >= totale):
+            break
+        meta = {"size": 100, "sequence": sequenza}
+        time.sleep(0.3)
+    print(f"    {fondo}: {letti}/{totale if totale is not None else '?'} annunci letti, {len(offerte)} compatibili a Parigi")
+    return offerte
+
+def scrape_portfolio_vc():
+    print("🔍 Portfolio VC (Getro + Consider)...")
+    compiti = [lambda d=d, f=f, i=i: _getro_board(d, f, i) for d, (f, i) in VC_GETRO.items()]
+    compiti += [lambda d=d, f=f: _consider_board(d, f) for d, f in VC_CONSIDER.items()]
+    tutte = _esegui_in_parallelo(compiti, lambda compito: compito())
+    # Un'azienda finanziata da più fondi compare in più board: teniamo un solo
+    # annuncio per link, unendo i nomi dei fondi.
+    per_url = {}
+    for o in tutte:
+        chiave = re.sub(r"[?#].*$", "", o["url"]) or id(o)
+        if chiave in per_url:
+            fondi = per_url[chiave]["via"].split(", ")
+            if o["via"] not in fondi:
+                per_url[chiave]["via"] = ", ".join(fondi + [o["via"]])
+        else:
+            per_url[chiave] = o
+    risultati = list(per_url.values())
+    print(f"   → {len(risultati)} offerte compatibili trovate ({len(tutte) - len(risultati)} doppioni tra fondi)")
+    return risultati
+
 # ============================================================
 # 📧  GENERAZIONE EMAIL — neutra, nessuno scoring, per fonte
 # Keyword dei job title emersi dal percorso di orientamento professionale
@@ -720,6 +943,7 @@ def matcha_job_title_target(titolo: str) -> bool:
 # ============================================================
 
 FONTE_COLORS = {
+    "Portfolio VC": ("#0f766e", "#ffffff"),
     "Greenhouse": ("#0f9d58", "#ffffff"),
     "Lever":      ("#5b6bf5", "#ffffff"),
     "Ashby":      ("#7c3aed", "#ffffff"),
@@ -762,7 +986,9 @@ def genera_html(tutte_nuove: dict, totale_trovate: int):
         righe = ""
         for o in ordina_neutro(offerte):
             azienda_riga = (f'<div style="font-size:13px;font-weight:600;color:#444;margin-bottom:2px;">'
-                            f'🏢 {_e(o.get("azienda") or "N/D")}</div>')
+                            f'🏢 {_e(o.get("azienda") or "N/D")}'
+                            + (f' <span style="font-weight:400;color:#888;">· via {_e(o["via"])}</span>' if o.get("via") else "")
+                            + '</div>')
             loc = f'<span style="color:#888;">📍 {_e(o["location"])}</span>&ensp;' if o.get("location") else ""
             data = f'<span style="color:#aaa;">📅 {_e(o["data"])}</span>' if o.get("data") else ""
             # Badge puramente informativo, nessun impatto su ordinamento o filtro.
@@ -840,7 +1066,8 @@ def genera_testo(tutte_nuove: dict, totale_trovate: int) -> str:
         for o in ordina_neutro(offerte):
             target = " [ruolo target]" if matcha_job_title_target(o.get("titolo", "")) else ""
             dettagli = " · ".join(x for x in (o.get("location"), o.get("data")) if x)
-            righe += [f"- {o.get('azienda', 'N/D')} — {o['titolo']}{target}",
+            via = f" (via {o['via']})" if o.get("via") else ""
+            righe += [f"- {o.get('azienda', 'N/D')}{via} — {o['titolo']}{target}",
                       f"  {dettagli}" if dettagli else "", f"  {o.get('url', '')}"]
     return "\n".join(r for r in righe if r is not None)
 
@@ -935,7 +1162,7 @@ def main():
     print(f"{'='*55}\n")
 
     seen, fonti_migrate = carica_seen()
-    da_migrare = [f for f in TUTTE_LE_FONTI if f not in fonti_migrate]
+    da_migrare = [f for f in FONTI_STORICHE if f not in fonti_migrate]
     if da_migrare:
         print(f"🔄 Aggiorno il formato di seen_jobs.json per: {', '.join(da_migrare)} "
               f"(senza rimandare annunci già ricevuti)")
@@ -947,6 +1174,7 @@ def main():
         ("Ashby", scrape_ashby),
         ("SmartRecruiters", scrape_smartrecruiters),
         ("Welcome to the Jungle", scrape_wttj),
+        ("Portfolio VC", scrape_portfolio_vc),
     ]
 
     tutte_trovate = {}
@@ -959,7 +1187,14 @@ def main():
             media = media_storica_per_fonte(storico, nome)
             health_check(nome, len(offerte), media)
             if offerte:
-                nuove, seen = filtra_nuove(nome, offerte, seen, nome not in fonti_migrate)
+                prima_volta = nome not in fonti_migrate
+                if prima_volta and nome not in FONTI_STORICHE:
+                    print(f"   🆕 Primo run di {nome}: mostro solo gli annunci degli ultimi "
+                          f"{GIORNI_PRIMO_RUN_FONTE_NUOVA} giorni")
+                nuove, seen = filtra_nuove(
+                    nome, offerte, seen,
+                    migrazione_da_v1=prima_volta and nome in FONTI_STORICHE,
+                    solo_ultimi_giorni=GIORNI_PRIMO_RUN_FONTE_NUOVA if prima_volta and nome not in FONTI_STORICHE else None)
                 fonti_migrate.add(nome)
                 if nuove:
                     tutte_nuove[nome] = nuove

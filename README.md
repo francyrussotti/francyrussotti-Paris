@@ -1,7 +1,8 @@
 # Paris Job Newsletter
 
 Scraper per annunci di lavoro a Parigi in inglese (senza francese richiesto),
-da fonti pubbliche legali: Greenhouse, Lever, Welcome to the Jungle.
+da fonti pubbliche: Greenhouse, Lever, Ashby, SmartRecruiters, Welcome to the Jungle
+e i job board pubblici dei fondi VC (portafogli di Accel, Balderton, Alven, XAnge, Sequoia…).
 
 ## Setup
 
@@ -49,8 +50,13 @@ da fonti pubbliche legali: Greenhouse, Lever, Welcome to the Jungle.
 
 - Se uno scraper trova 0 risultati per più run consecutive, controlla il log
   (`health_check` stampa un warning) — probabile cambio di struttura del sito.
-- Il selettore CSS di WTTJ (`[data-testid^='job-thumb-']`) va verificato periodicamente:
-  è la parte più fragile del progetto.
+- WTTJ è la parte più fragile: il 25/10/2026 ha cambiato sito. Ora leggiamo la pagina
+  `/en/companies/{slug}/jobs` di ogni azienda (link `/jobs/{titolo}_{città}`). Se la riga
+  `[diagnostica]` del log mostra 0 annunci letti, la struttura è cambiata di nuovo.
+- **Fondi VC**: i board sono in `VC_GETRO` e `VC_CONSIDER` in `paris_job_newsletter.py`.
+  Per aggiungere un fondo che usa Getro serve l'id del board (nella pagina, nel JSON
+  `__NEXT_DATA__` → `"network":{"id":...}`); per Consider basta il dominio.
+  Al primo run di una fonte nuova arrivano solo gli annunci degli ultimi 7 giorni.
 - WTTJ apre `WTTJ_PAGINE_PARALLELE` pagine insieme (default 4). Se nel log compaiono
   molti timeout o il circuit breaker scatta spesso, abbassa il numero.
 - **Nomi azienda**: se un nome appare scritto male nella mail, aggiungilo a
