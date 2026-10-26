@@ -11520,7 +11520,7 @@
     }
   },
   "Algolia": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "algolia",
       "lever": null,
@@ -16416,421 +16416,421 @@
     }
   },
   "BlaBlaCar": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "lever": "blablacar"
     }
   },
   "Linear": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "linear"
     }
   },
   "Shift Technology": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "shifttechnology"
     }
   },
   "Nuitée | Enabling All Companies to Build Travel Solutions": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "nuitee"
     }
   },
   "Doctolib": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "doctolib"
     }
   },
   "Anthropic": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "anthropic"
     }
   },
   "H Company": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "hcompany"
     }
   },
   "Nebius": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "nebius"
     }
   },
   "Celonis": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "celonis"
     }
   },
   "Forgerock": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "pingidentity"
     }
   },
   "getviktor.com": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "viktor"
     }
   },
   "Synthesia": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "synthesia"
     }
   },
   "Freshworks": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "smartrecruiters": "freshworks"
     }
   },
   "Split Software": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "harnessinc"
     }
   },
   "Cognite": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "cognite"
     }
   },
   "Helsing": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "helsing"
     }
   },
   "Netskope": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "netskope"
     }
   },
   "Fever": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "feverup"
     }
   },
   "Sky Mavis": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "skymavis"
     }
   },
   "SingleStore": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "singlestore"
     }
   },
   "Supabase": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "supabase"
     }
   },
   "n8n": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "n8n"
     }
   },
   "Primer": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "primer.io"
     }
   },
   "Aiven": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "aiven36"
     }
   },
   "Tem.": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "tem"
     }
   },
   "qlub": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "qlub"
     }
   },
   "Front": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "frontcareers"
     }
   },
   "Ditto": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "beavr"
     }
   },
   "PlayPlay": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "lever": "playplay"
     }
   },
   "Anine Bing": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "aninebing"
     }
   },
   "Fundamental": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "fundamental"
     }
   },
   "Bioptimus ": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "bioptimus8"
     }
   },
   "Black Forest Labs": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "black-forest-labs"
     }
   },
   "Heidi Health": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "heidihealth.com.au"
     }
   },
   "Arago Inc.": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "arago"
     }
   },
   "Verkada ": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "verkada"
     }
   },
   "Canva": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "smartrecruiters": "canva"
     }
   },
   "Ping Identity": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "pingidentity"
     }
   },
   "Beacon Biosignals": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "beaconbiosignals"
     }
   },
   "Parloa": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "parloa"
     }
   },
   "Nabla": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "nabla"
     }
   },
   "Atolls": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "atolls"
     }
   },
   "Finn": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "lever": "finn"
     }
   },
   "Lokalise": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "lokalise"
     }
   },
   "Dataiku": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "dataiku"
     }
   },
   "iad": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "smartrecruiters": "iad"
     }
   },
   "Plume": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "plume"
     }
   },
   "Tavily": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "tavily"
     }
   },
   "Thunes": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "thunes"
     }
   },
   "Veeam Software": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "veeamsoftware"
     }
   },
   "Mirantis": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "smartrecruiters": "mirantis"
     }
   },
   "OneTrust": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "onetrust"
     }
   },
   "Kpler": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "lever": "kpler"
     }
   },
   "Augury": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "augury"
     }
   },
   "JobTeaser": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "smartrecruiters": "jobteaser"
     }
   },
   "amo": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "amo"
     }
   },
   "Gorgias": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "gorgias"
     }
   },
   "Heetch": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "lever": "heetch"
     }
   },
   "Genesis AI": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "genesis"
     }
   },
   "Morpho Labs": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "morpho"
     }
   },
   "Neural Concept": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "neuralconcept"
     }
   },
   "Kestra": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "kestra"
     }
   },
   "Ankorstore": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "ankorstore"
     }
   },
   "360Learning": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "lever": "360learning"
     }
   },
   "Bigblue": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "lever": "bigblue"
     }
   },
   "Aircall": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "aircallioinc"
     }
   },
   "Raidium": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "lever": "raidium"
     }
   },
   "Vestiaire Collective": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "lever": "vestiairecollective"
     }
   },
   "Kong": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "kong"
     }
   },
   "PhotoRoom": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "photoroom"
     }
@@ -16842,91 +16842,91 @@
     }
   },
   "Temporal Technologies": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "temporal"
     }
   },
   "Pennylane": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "pennylane"
     }
   },
   "Dust": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "dust"
     }
   },
   "Notion": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "notion"
     }
   },
   "Rogo": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "rogo"
     }
   },
   "n8n.io": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "n8n"
     }
   },
   "Verkada": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "verkada"
     }
   },
   "Dashlane": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "dashlane"
     }
   },
   "Zefir": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "zefir"
     }
   },
   "Sierra": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "sierra"
     }
   },
   "Chainguard": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "chainguard"
     }
   },
   "Harvey": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "harvey"
     }
   },
   "Figma": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "figma"
     }
   },
   "Grafana Labs": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "greenhouse": "grafanalabs"
     }
   },
   "Upvest": {
-    "ultimo_controllo": "2026-10-25T18:58:03.289341",
+    "ultimo_controllo": "2026-10-26T07:04:19.607724",
     "fonti": {
       "ashby": "upvest"
     }
