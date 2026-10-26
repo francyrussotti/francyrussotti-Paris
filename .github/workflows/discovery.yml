@@ -13,6 +13,7 @@ permissions:
 jobs:
   discovery:
     runs-on: ubuntu-latest
+    timeout-minutes: 90   # una run normale dura ~15-25 minuti
     steps:
       - name: Checkout repo
         uses: actions/checkout@v6
