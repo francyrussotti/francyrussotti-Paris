@@ -33,8 +33,9 @@ permissions:
 jobs:
   newsletter:
     runs-on: ubuntu-latest
-    timeout-minutes: 300  # 5 ore: nessuna fretta, l'importante è che la mail arrivi completa.
-                         # Resta comunque sotto il tetto massimo di GitHub Actions (6 ore).
+    # Una run normale dura ~15-20 minuti. Con un limite di 5 ore una run bloccata
+    # tratteneva quelle di riserva (che aspettano in coda) fino al pomeriggio.
+    timeout-minutes: 60
     steps:
       - name: Checkout repo
         uses: actions/checkout@v6
@@ -64,6 +65,8 @@ jobs:
           sudo $(which playwright) install-deps chromium
 
       - name: Run newsletter script
+        # Limite più basso di quello del job: resta tempo per salvare i file
+        timeout-minutes: 50
         env:
           GMAIL_MITTENTE: ${{ secrets.GMAIL_MITTENTE }}
           GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}

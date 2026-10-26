@@ -1,8 +1,9 @@
 # ============================================================
 #  📰 PARIS JOB NEWSLETTER — annunci in inglese, no francese richiesto
 #
-#  Fonti: Greenhouse, Lever (API JSON pubbliche) + Welcome to the Jungle
-#  (HTML, con fallback Playwright per contenuto caricato via JS)
+#  Fonti: Greenhouse, Lever, Ashby, SmartRecruiters (API JSON pubbliche),
+#  Welcome to the Jungle (pagine pubbliche lette con Playwright) e i job
+#  board pubblici dei fondi VC (Getro, Consider).
 #
 #  Filosofia:
 #  - Nessuno scoring, nessuna sezione "aziende target": la mail è neutra,
@@ -577,9 +578,14 @@ def _esegui_in_parallelo(elementi: list, funzione) -> list:
     bisogno di multiprocessing). Appiattisce le liste di risultati."""
     risultati = []
     with ThreadPoolExecutor(max_workers=MAX_WORKER_PARALLELI) as executor:
-        futures = [executor.submit(funzione, el) for el in elementi]
+        futures = {executor.submit(funzione, el): el for el in elementi}
         for future in as_completed(futures):
-            risultati.extend(future.result() or [])
+            try:
+                risultati.extend(future.result() or [])
+            except Exception as e:
+                # Un'azienda con dati malformati non deve far saltare l'intera fonte.
+                nome = futures[future] if isinstance(futures[future], str) else "elemento"
+                print(f"    ⚠️  {nome}: errore nella lettura ({type(e).__name__}: {str(e)[:100]})")
     return risultati
 
 def scrape_greenhouse():
@@ -594,7 +600,11 @@ def scrape_greenhouse():
         for job in r.json().get("jobs", []):
             azienda = job.get("company_name") or slug_a_nome_leggibile(slug)
             titolo = job.get("title", "")
-            location = job.get("location", {}).get("name", "")
+            # Anche gli uffici collegati all'annuncio (es. location "Remote - EU",
+            # uffici ["London", "Paris"])
+            sedi = [(job.get("location") or {}).get("name", "")]
+            sedi += [(x or {}).get("name", "") for x in (job.get("offices") or [])]
+            location = ", ".join(dict.fromkeys(x for x in sedi if x))
             descrizione = job.get("content", "")
             if not passa_filtri(titolo, location, descrizione):
                 continue
@@ -627,7 +637,10 @@ def scrape_lever():
         offerte = []
         for job in r.json():
             titolo = job.get("text", "")
-            location = (job.get("categories", {}) or {}).get("location", "")
+            categorie = job.get("categories", {}) or {}
+            # Anche le sedi secondarie: "London" + allLocations ["London", "Paris"]
+            sedi = [categorie.get("location", "")] + list(categorie.get("allLocations") or [])
+            location = ", ".join(dict.fromkeys(x for x in sedi if x))
             descrizione = job.get("descriptionPlain", "") or job.get("description", "")
             if not passa_filtri(titolo, location, descrizione):
                 continue
@@ -667,7 +680,10 @@ def scrape_ashby():
         offerte = []
         for job in r.json().get("jobs", []):
             titolo = job.get("title", "")
-            location = job.get("location", "") or job.get("address", {}).get("postalAddress", {}).get("addressLocality", "")
+            sedi = [job.get("location", "") or ((job.get("address") or {}).get("postalAddress") or {}).get("addressLocality", "")]
+            # Anche le sedi secondarie (es. principale "London", secondaria "Paris")
+            sedi += [(x or {}).get("location", "") for x in (job.get("secondaryLocations") or [])]
+            location = ", ".join(dict.fromkeys(x for x in sedi if x))
             descrizione = job.get("descriptionPlain", "") or job.get("descriptionHtml", "")
             if not passa_filtri(titolo, location, descrizione):
                 continue
@@ -705,10 +721,10 @@ def scrape_smartrecruiters():
             # SmartRecruiters dichiara esplicitamente la lingua dell'annuncio nel
             # dettaglio (campo "language") — molto più affidabile di langdetect
             # su una descrizione vuota, che causava falsi positivi in francese.
-            job_id = job.get("id", "")
+            id_annuncio = job.get("id", "")
             descrizione = ""
             lingua_dichiarata = None
-            dettaglio = http_get(f"https://api.smartrecruiters.com/v1/companies/{company_id}/postings/{job_id}")
+            dettaglio = http_get(f"https://api.smartrecruiters.com/v1/companies/{company_id}/postings/{id_annuncio}")
             if dettaglio:
                 d = dettaglio.json()
                 lingua_dichiarata = (d.get("language") or {}).get("code")
@@ -999,6 +1015,8 @@ def _consider_board(dominio: str, fondo: str, grezzi: bool = False) -> list:
             f"https://{dominio}/jobs", headers={"User-Agent": BROWSER_USER_AGENT}, timeout=t)).text
         token = re.search(r'csrfToken":"([^"]+)"', pagina_html).group(1)
         board = re.search(r'"board":\{"id":"([^"]+)","isParent":(true|false)', pagina_html)
+        if not board:
+            raise ValueError("configurazione del board non trovata nella pagina")
     except Exception as e:
         print(f"    ⚠️  {fondo} (Consider): pagina non leggibile ({e})")
         return []
@@ -1444,11 +1462,9 @@ def main():
             tutte_trovate[nome] = []
         time.sleep(1)
 
-    salva_seen(seen, fonti_migrate)
     salva_slug_inattivi()
     for nome, slugs in aziende_monitorate().items():
         aziende_note.setdefault(nome, set()).update(slugs)
-    salva_aziende_note(aziende_note)
     # Gli annunci scartati qui restano comunque "visti": non verranno ricontrollati.
     tutte_nuove = controlla_descrizioni(tutte_nuove)
 
@@ -1457,7 +1473,6 @@ def main():
         "data": datetime.now().strftime("%Y-%m-%d"),
         "fonti": {nome: len(tutte_trovate.get(nome, [])) for nome, _ in scrapers},
     })
-    salva_storico(storico)
 
     totale_trovate = sum(len(v) for v in tutte_trovate.values())
     totale_nuove = sum(len(v) for v in tutte_nuove.values())
@@ -1471,8 +1486,16 @@ def main():
 
     html, totale = genera_html(tutte_nuove, totale_trovate, avvisi)
     testo = genera_testo(tutte_nuove, totale_trovate, avvisi)
+    # Annunci visti, aziende note e storico si salvano SOLO se la mail è partita:
+    # se l'invio fallisce, la run di riserva successiva li ritrova come nuovi e
+    # li manda, invece di perderli.
     if invia_email(html, testo, oggetto_email(totale, conta_ruoli_target(tutte_nuove))):
         salva_seen(seen, fonti_migrate, ultimo_invio=oggi_parigi())
+        salva_aziende_note(aziende_note)
+        salva_storico(storico)
+    else:
+        print("⚠️  Mail non inviata: annunci visti e storico NON aggiornati, "
+              "la prossima run li riproverà.")
     print("\n✨ Done!\n")
 
 if __name__ == "__main__":
