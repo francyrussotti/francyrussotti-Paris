@@ -1,0 +1,14 @@
+name: probe nuove fonti (temporaneo)
+on:
+  push:
+    branches: [probe/nuove-fonti]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with: {python-version: "3.11"}
+      - run: pip install requests
+      - run: python probe/probe.py
+        env: {PYTHONUNBUFFERED: "1"}
