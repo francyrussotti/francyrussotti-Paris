@@ -87,6 +87,8 @@ ASHBY_SLUGS_MANUALI = [
     "linear", "supabase", "posthog", "ramp", "modal", "railway",
     "browserbase", "n8n", "zapier", "attio", "cohere", "pinecone",
     "talkdesk",
+    # Aggiunte su richiesta dell'utente:
+    "ledger",  # careers.ledger.com mostra il board Ashby "ledger" (verificato 29/10/2026)
 ]
 
 # ID azienda SmartRecruiters: es. https://careers.smartrecruiters.com/Bosch -> "Bosch"
@@ -115,6 +117,11 @@ def _carica_slug_scoperti() -> dict:
     except Exception as e:
         print(f"⚠️  Errore lettura discovered_slugs.json: {e}")
         return {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": [], "wttj": []}
+
+# Aziende inserite a mano nelle liste qui sopra: al primo run arrivano tutti i
+# loro annunci compatibili (niente regola "solo ultimi 7 giorni").
+AZIENDE_MANUALI = (set(GREENHOUSE_SLUGS_MANUALI) | set(LEVER_SLUGS_MANUALI)
+                   | set(ASHBY_SLUGS_MANUALI) | set(SMARTRECRUITERS_IDS_MANUALI))
 
 _scoperti = _carica_slug_scoperti()
 GREENHOUSE_SLUGS = sorted(set(GREENHOUSE_SLUGS_MANUALI) | set(_scoperti["greenhouse"]))
@@ -544,6 +551,7 @@ NOMI_AZIENDE = {
     "n8n": "n8n", "openai": "OpenAI", "hubspot": "HubSpot", "linkedin": "LinkedIn",
     "github": "GitHub", "paypal": "PayPal", "doctolib": "Doctolib",
     "backmarket": "Back Market", "blablacar": "BlaBlaCar", "alan": "Alan",
+    "ledger": "Ledger",
 }
 
 _SIGLE = {"ai": "AI", "io": "IO", "hr": "HR", "ia": "IA", "sas": "SAS", "it": "IT"}
@@ -1444,6 +1452,9 @@ def main():
                 note = aziende_note.setdefault(nome, set())
                 # Senza storico (primo run con questa funzione) nessuna azienda è "nuova".
                 aziende_nuove = set() if prima_volta_note or not note else aziende_oggi - note
+                # Le aziende aggiunte a mano le vuoi vedere per intero, non solo
+                # gli annunci degli ultimi giorni.
+                aziende_nuove -= AZIENDE_MANUALI
                 if aziende_nuove:
                     print(f"   🆕 {len(aziende_nuove)} aziende appena aggiunte: dei loro annunci "
                           f"mostro solo quelli degli ultimi {GIORNI_PRIMO_RUN_FONTE_NUOVA} giorni")
