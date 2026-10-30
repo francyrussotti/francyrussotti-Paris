@@ -1,6 +1,10 @@
 {
+  "greenhouse:aiven36": {
+    "errori": 1,
+    "dal": "2026-10-30"
+  },
   "lever:fresha": {
-    "errori": 4,
+    "errori": 5,
     "dal": "2026-10-26"
   }
 }
