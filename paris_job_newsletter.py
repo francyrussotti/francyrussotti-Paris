@@ -778,6 +778,18 @@ _JS_LINK_ANNUNCI = "els => els.map(e => [e.href, e.innerText])"
 # La pagina va caricata come nella versione verificata: browser.new_page con UA
 # da browser, nessun blocco di immagini/font, attesa di 2s dopo il caricamento.
 
+# NOTA (31/10/2026): dal 29/10 WTTJ blocca le richieste che arrivano dai server
+# di GitHub: ogni pagina risponde con l'errore di CloudFront "The request could
+# not be satisfied". Non è un cambio di struttura del sito e non va aggirato:
+# se le prime pagine sono tutte bloccate ci si ferma subito (prima si provavano
+# tutte le 565 aziende, ~7 minuti per nulla) e la mail lo dice chiaramente.
+WTTJ_PAGINE_PROVA_BLOCCO = 8
+_WTTJ_TITOLO_BLOCCO = re.compile(r"request could not be satisfied|access denied|attention required", re.I)
+WTTJ_BLOCCATO = False
+
+def _pagina_bloccata(titolo: str) -> bool:
+    return bool(_WTTJ_TITOLO_BLOCCO.search(titolo or ""))
+
 def _citta_da_url_wttj(url: str) -> str:
     """'.../jobs/business-developer-sdr_paris_PAYFI_kAM5w6l' -> 'Paris'."""
     ultimo = url.split("?")[0].rstrip("/").rsplit("/", 1)[-1]
@@ -786,10 +798,11 @@ def _citta_da_url_wttj(url: str) -> str:
         return "-".join(p.capitalize() for p in parti[1].split("-"))
     return ""
 
-async def _wttj_async(slugs: list) -> tuple[list, int]:
+async def _wttj_async(slugs: list) -> tuple[list, int, bool]:
     risultati = []
     stato = {"fallimenti_consecutivi": 0, "stop": False, "saltate": 0,
-             "pagine_ok": 0, "card_totali": 0, "esempi_vuoti": []}
+             "pagine_ok": 0, "card_totali": 0, "esempi_vuoti": [],
+             "bloccate": 0, "provate": 0, "bloccato": False}
     coda: asyncio.Queue = asyncio.Queue()
     for s in slugs:
         coda.put_nowait(s)
@@ -816,6 +829,17 @@ async def _wttj_async(slugs: list) -> tuple[list, int]:
                 for n in range(1, WTTJ_MAX_PAGINE_AZIENDA + 1):
                     url = f"{WTTJ_BASE_URL}/en/companies/{slug}/jobs" + (f"?page={n}" if n > 1 else "")
                     link = await leggi_pagina(page, url)
+                    if n == 1:
+                        stato["provate"] += 1
+                        if not link and _pagina_bloccata(await page.title()):
+                            stato["bloccate"] += 1
+                        if (not stato["bloccato"] and stato["provate"] >= WTTJ_PAGINE_PROVA_BLOCCO
+                                and stato["bloccate"] == stato["provate"]):
+                            stato["bloccato"] = stato["stop"] = True
+                            print(f"    ⛔ Le prime {stato['provate']} aziende rispondono con la pagina "
+                                  f"di blocco del sito: WTTJ rifiuta le richieste da qui. Mi fermo.")
+                    if not link and _pagina_bloccata(await page.title()):
+                        break
                     if not banner_gestito:
                         # Il banner cookie compare solo alla prima visita di ogni pagina.
                         for testo in ("OK for me", "No, thanks"):
@@ -868,10 +892,10 @@ async def _wttj_async(slugs: list) -> tuple[list, int]:
     # da "annunci trovati ma scartati dai filtri".
     print(f"   [diagnostica] {stato['pagine_ok']} aziende caricate, {stato['card_totali']} annunci "
           f"letti prima dei filtri")
-    if stato["pagine_ok"] and not stato["card_totali"]:
+    if stato["pagine_ok"] and not stato["card_totali"] and not stato["bloccato"]:
         print(f"   ⚠️  Nessun annuncio letto da nessuna pagina: probabile cambio di struttura "
               f"del sito o pagina non caricata del tutto. Esempi: {stato['esempi_vuoti']}")
-    return risultati, stato["saltate"]
+    return risultati, stato["saltate"], stato["bloccato"]
 
 def scrape_wttj():
     """Scraping WTTJ per singola azienda (pagina /jobs dell'azienda), usando
@@ -888,11 +912,15 @@ def scrape_wttj():
         print("   → nessuno slug WTTJ disponibile (serve prima far girare l'auto-discovery)")
         return []
 
+    global WTTJ_BLOCCATO
     inizio = time.time()
     try:
-        risultati, saltate = asyncio.run(_wttj_async(WTTJ_SLUGS))
+        risultati, saltate, WTTJ_BLOCCATO = asyncio.run(_wttj_async(WTTJ_SLUGS))
     except Exception as e:
         print(f"   ⚠️  Errore generale WTTJ: {e}")
+        return []
+    if WTTJ_BLOCCATO:
+        print("   → fonte sospesa per oggi: il sito blocca le richieste dai server di GitHub")
         return []
     if saltate:
         print(f"   [nota] {saltate} aziende non controllate in questo run "
@@ -1442,7 +1470,13 @@ def main():
             offerte = fn()
             tutte_trovate[nome] = offerte
             media = media_storica_per_fonte(storico, nome)
-            avviso = health_check(nome, len(offerte), media)
+            if nome == "Welcome to the Jungle" and WTTJ_BLOCCATO:
+                avviso = (f"{nome}: il sito blocca le richieste che arrivano dai server di GitHub "
+                          f"(pagina di errore CloudFront), quindi oggi la fonte è sospesa. Non è un "
+                          f"errore dello scraper: riprova da sola ogni giorno.")
+                print(f"⚠️  {avviso}")
+            else:
+                avviso = health_check(nome, len(offerte), media)
             if avviso:
                 avvisi.append(avviso)
             if offerte:
