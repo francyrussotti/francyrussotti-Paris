@@ -25,6 +25,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import json, time, re, os, hashlib, asyncio
 import html as html_lib
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
@@ -110,13 +112,14 @@ def _carica_slug_scoperti() -> dict:
             "lever": data.get("lever", []),
             "ashby": data.get("ashby", []),
             "smartrecruiters": data.get("smartrecruiters", []),
+            "teamtailor": data.get("teamtailor", []),
             "wttj": data.get("wttj", []),
         }
     except FileNotFoundError:
-        return {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": [], "wttj": []}
+        return {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": [], "teamtailor": [], "wttj": []}
     except Exception as e:
         print(f"⚠️  Errore lettura discovered_slugs.json: {e}")
-        return {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": [], "wttj": []}
+        return {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": [], "teamtailor": [], "wttj": []}
 
 # Aziende inserite a mano nelle liste qui sopra: al primo run arrivano tutti i
 # loro annunci compatibili (niente regola "solo ultimi 7 giorni").
@@ -128,9 +131,11 @@ GREENHOUSE_SLUGS = sorted(set(GREENHOUSE_SLUGS_MANUALI) | set(_scoperti["greenho
 LEVER_SLUGS = sorted(set(LEVER_SLUGS_MANUALI) | set(_scoperti["lever"]))
 ASHBY_SLUGS = sorted(set(ASHBY_SLUGS_MANUALI) | set(_scoperti["ashby"]))
 SMARTRECRUITERS_IDS = sorted(set(SMARTRECRUITERS_IDS_MANUALI) | set(_scoperti["smartrecruiters"]))
+TEAMTAILOR_SLUGS = sorted(set(_scoperti.get("teamtailor", [])))  # solo da auto-discovery
 WTTJ_SLUGS = sorted(set(_scoperti.get("wttj", [])))  # solo da auto-discovery, nessun seed manuale
 print(f"📋 Aziende monitorate: {len(GREENHOUSE_SLUGS)} Greenhouse, {len(LEVER_SLUGS)} Lever, "
-      f"{len(ASHBY_SLUGS)} Ashby, {len(SMARTRECRUITERS_IDS)} SmartRecruiters, {len(WTTJ_SLUGS)} WTTJ "
+      f"{len(ASHBY_SLUGS)} Ashby, {len(SMARTRECRUITERS_IDS)} SmartRecruiters, {len(TEAMTAILOR_SLUGS)} Teamtailor, "
+      f"{len(WTTJ_SLUGS)} WTTJ "
       f"({sum(len(v) for v in _scoperti.values())} da auto-discovery)")
 
 HEADERS = {
@@ -452,7 +457,8 @@ AZIENDE_NOTE_FILE = "aziende_note.json"
 def aziende_monitorate() -> dict:
     """Tutte le aziende che ogni fonte controlla oggi (con o senza annunci)."""
     return {"Greenhouse": set(GREENHOUSE_SLUGS), "Lever": set(LEVER_SLUGS), "Ashby": set(ASHBY_SLUGS),
-            "SmartRecruiters": set(SMARTRECRUITERS_IDS), "Welcome to the Jungle": set(WTTJ_SLUGS)}
+            "SmartRecruiters": set(SMARTRECRUITERS_IDS), "Teamtailor": set(TEAMTAILOR_SLUGS),
+            "Welcome to the Jungle": set(WTTJ_SLUGS)}
 
 def carica_aziende_note() -> dict | None:
     try:
@@ -707,6 +713,66 @@ def scrape_ashby():
         return offerte
 
     risultati = _esegui_in_parallelo(ASHBY_SLUGS, per_azienda)
+    print(f"   → {len(risultati)} offerte compatibili trovate")
+    return risultati
+
+# ============================================================
+# 🏢  SCRAPER — Teamtailor (feed RSS pubblico del career site)
+# ============================================================
+#  Aggiunto il 31/10/2026: molte aziende presenti su WTTJ (Skello, Pasqal,
+#  Exotrail, Stoik, PayPlug…) pubblicano gli stessi annunci sul loro career
+#  site Teamtailor, che ha un feed pubblico https://{slug}.teamtailor.com/jobs.rss
+#  con titolo, link, data e sedi (<tt:location> con città e paese).
+
+_TT = "{https://teamtailor.com/locations}"
+
+def _offerte_teamtailor(xml_testo: str) -> list:
+    """Annunci grezzi dal feed RSS: titolo, link, data, sede, descrizione."""
+    radice = ET.fromstring(xml_testo)
+    canale = radice.find("channel")
+    out = []
+    for item in (canale.findall("item") if canale is not None else []):
+        sedi = []
+        for loc in item.iter(f"{_TT}location"):
+            citta = (loc.findtext(f"{_TT}city") or loc.findtext(f"{_TT}name") or "").strip()
+            paese = (loc.findtext(f"{_TT}country") or "").strip()
+            sedi.append(", ".join(x for x in (citta, paese) if x))
+        if (item.findtext("remoteStatus") or "").strip().lower() in ("fully", "remote"):
+            sedi.append("Remote")
+        data = ""
+        try:
+            data = parsedate_to_datetime(item.findtext("pubDate") or "").strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        out.append({"titolo": (item.findtext("title") or "").strip(),
+                    "url": (item.findtext("link") or "").strip(),
+                    "location": " / ".join(dict.fromkeys(x for x in sedi if x)),
+                    "descrizione": html_lib.unescape(item.findtext("description") or ""),
+                    "data": data})
+    return out
+
+def scrape_teamtailor():
+    print("🔍 Teamtailor...")
+
+    def per_azienda(slug):
+        r = _get_board("teamtailor", slug, f"https://{slug}.teamtailor.com/jobs.rss")
+        if not r:
+            return []
+        azienda = slug_a_nome_leggibile(slug)
+        offerte = []
+        for job in _offerte_teamtailor(r.text):
+            if not job["titolo"] or not passa_filtri(job["titolo"], job["location"], job["descrizione"]):
+                continue
+            offerte.append(_con_azienda({
+                "titolo": job["titolo"],
+                "azienda": azienda,
+                "location": job["location"],
+                "url": job["url"],
+                "data": job["data"],
+            }, slug, azienda))
+        return offerte
+
+    risultati = _esegui_in_parallelo(TEAMTAILOR_SLUGS, per_azienda)
     print(f"   → {len(risultati)} offerte compatibili trovate")
     return risultati
 
@@ -1457,6 +1523,7 @@ def main():
         ("Lever", scrape_lever),
         ("Ashby", scrape_ashby),
         ("SmartRecruiters", scrape_smartrecruiters),
+        ("Teamtailor", scrape_teamtailor),
         ("Welcome to the Jungle", scrape_wttj),
         ("Portfolio VC", scrape_portfolio_vc),
     ]
