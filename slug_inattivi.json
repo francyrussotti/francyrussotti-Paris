@@ -1,10 +1,10 @@
 {
   "ashby:tilt": {
-    "errori": 1,
+    "errori": 2,
     "dal": "2026-10-31"
   },
   "greenhouse:aiven36": {
-    "errori": 2,
+    "errori": 3,
     "dal": "2026-10-30"
   },
   "lever:fresha": {
