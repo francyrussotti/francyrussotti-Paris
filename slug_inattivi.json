@@ -1,6 +1,6 @@
 {
   "ashby:tilt": {
-    "errori": 4,
+    "errori": 5,
     "dal": "2026-10-31"
   },
   "greenhouse:aiven36": {
@@ -8,7 +8,7 @@
     "dal": "2026-10-30"
   },
   "greenhouse:doctolib": {
-    "errori": 1,
+    "errori": 2,
     "dal": "2026-11-03"
   },
   "lever:fresha": {
