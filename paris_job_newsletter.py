@@ -25,6 +25,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import json, time, re, os, hashlib, asyncio
 import html as html_lib
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
@@ -110,13 +112,14 @@ def _carica_slug_scoperti() -> dict:
             "lever": data.get("lever", []),
             "ashby": data.get("ashby", []),
             "smartrecruiters": data.get("smartrecruiters", []),
+            "teamtailor": data.get("teamtailor", []),
             "wttj": data.get("wttj", []),
         }
     except FileNotFoundError:
-        return {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": [], "wttj": []}
+        return {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": [], "teamtailor": [], "wttj": []}
     except Exception as e:
         print(f"⚠️  Errore lettura discovered_slugs.json: {e}")
-        return {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": [], "wttj": []}
+        return {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": [], "teamtailor": [], "wttj": []}
 
 # Aziende inserite a mano nelle liste qui sopra: al primo run arrivano tutti i
 # loro annunci compatibili (niente regola "solo ultimi 7 giorni").
@@ -128,9 +131,11 @@ GREENHOUSE_SLUGS = sorted(set(GREENHOUSE_SLUGS_MANUALI) | set(_scoperti["greenho
 LEVER_SLUGS = sorted(set(LEVER_SLUGS_MANUALI) | set(_scoperti["lever"]))
 ASHBY_SLUGS = sorted(set(ASHBY_SLUGS_MANUALI) | set(_scoperti["ashby"]))
 SMARTRECRUITERS_IDS = sorted(set(SMARTRECRUITERS_IDS_MANUALI) | set(_scoperti["smartrecruiters"]))
+TEAMTAILOR_SLUGS = sorted(set(_scoperti.get("teamtailor", [])))  # solo da auto-discovery
 WTTJ_SLUGS = sorted(set(_scoperti.get("wttj", [])))  # solo da auto-discovery, nessun seed manuale
 print(f"📋 Aziende monitorate: {len(GREENHOUSE_SLUGS)} Greenhouse, {len(LEVER_SLUGS)} Lever, "
-      f"{len(ASHBY_SLUGS)} Ashby, {len(SMARTRECRUITERS_IDS)} SmartRecruiters, {len(WTTJ_SLUGS)} WTTJ "
+      f"{len(ASHBY_SLUGS)} Ashby, {len(SMARTRECRUITERS_IDS)} SmartRecruiters, {len(TEAMTAILOR_SLUGS)} Teamtailor, "
+      f"{len(WTTJ_SLUGS)} WTTJ "
       f"({sum(len(v) for v in _scoperti.values())} da auto-discovery)")
 
 HEADERS = {
@@ -452,7 +457,8 @@ AZIENDE_NOTE_FILE = "aziende_note.json"
 def aziende_monitorate() -> dict:
     """Tutte le aziende che ogni fonte controlla oggi (con o senza annunci)."""
     return {"Greenhouse": set(GREENHOUSE_SLUGS), "Lever": set(LEVER_SLUGS), "Ashby": set(ASHBY_SLUGS),
-            "SmartRecruiters": set(SMARTRECRUITERS_IDS), "Welcome to the Jungle": set(WTTJ_SLUGS)}
+            "SmartRecruiters": set(SMARTRECRUITERS_IDS), "Teamtailor": set(TEAMTAILOR_SLUGS),
+            "Welcome to the Jungle": set(WTTJ_SLUGS)}
 
 def carica_aziende_note() -> dict | None:
     try:
@@ -711,6 +717,66 @@ def scrape_ashby():
     return risultati
 
 # ============================================================
+# 🏢  SCRAPER — Teamtailor (feed RSS pubblico del career site)
+# ============================================================
+#  Aggiunto il 31/10/2026: molte aziende presenti su WTTJ (Skello, Pasqal,
+#  Exotrail, Stoik, PayPlug…) pubblicano gli stessi annunci sul loro career
+#  site Teamtailor, che ha un feed pubblico https://{slug}.teamtailor.com/jobs.rss
+#  con titolo, link, data e sedi (<tt:location> con città e paese).
+
+_TT = "{https://teamtailor.com/locations}"
+
+def _offerte_teamtailor(xml_testo: str) -> list:
+    """Annunci grezzi dal feed RSS: titolo, link, data, sede, descrizione."""
+    radice = ET.fromstring(xml_testo)
+    canale = radice.find("channel")
+    out = []
+    for item in (canale.findall("item") if canale is not None else []):
+        sedi = []
+        for loc in item.iter(f"{_TT}location"):
+            citta = (loc.findtext(f"{_TT}city") or loc.findtext(f"{_TT}name") or "").strip()
+            paese = (loc.findtext(f"{_TT}country") or "").strip()
+            sedi.append(", ".join(x for x in (citta, paese) if x))
+        if (item.findtext("remoteStatus") or "").strip().lower() in ("fully", "remote"):
+            sedi.append("Remote")
+        data = ""
+        try:
+            data = parsedate_to_datetime(item.findtext("pubDate") or "").strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        out.append({"titolo": (item.findtext("title") or "").strip(),
+                    "url": (item.findtext("link") or "").strip(),
+                    "location": " / ".join(dict.fromkeys(x for x in sedi if x)),
+                    "descrizione": html_lib.unescape(item.findtext("description") or ""),
+                    "data": data})
+    return out
+
+def scrape_teamtailor():
+    print("🔍 Teamtailor...")
+
+    def per_azienda(slug):
+        r = _get_board("teamtailor", slug, f"https://{slug}.teamtailor.com/jobs.rss")
+        if not r:
+            return []
+        azienda = slug_a_nome_leggibile(slug)
+        offerte = []
+        for job in _offerte_teamtailor(r.text):
+            if not job["titolo"] or not passa_filtri(job["titolo"], job["location"], job["descrizione"]):
+                continue
+            offerte.append(_con_azienda({
+                "titolo": job["titolo"],
+                "azienda": azienda,
+                "location": job["location"],
+                "url": job["url"],
+                "data": job["data"],
+            }, slug, azienda))
+        return offerte
+
+    risultati = _esegui_in_parallelo(TEAMTAILOR_SLUGS, per_azienda)
+    print(f"   → {len(risultati)} offerte compatibili trovate")
+    return risultati
+
+# ============================================================
 # 🏢  SCRAPER — SmartRecruiters (API JSON pubblica, tier-dipendente)
 # ============================================================
 
@@ -778,6 +844,18 @@ _JS_LINK_ANNUNCI = "els => els.map(e => [e.href, e.innerText])"
 # La pagina va caricata come nella versione verificata: browser.new_page con UA
 # da browser, nessun blocco di immagini/font, attesa di 2s dopo il caricamento.
 
+# NOTA (31/10/2026): dal 29/10 WTTJ blocca le richieste che arrivano dai server
+# di GitHub: ogni pagina risponde con l'errore di CloudFront "The request could
+# not be satisfied". Non è un cambio di struttura del sito e non va aggirato:
+# se le prime pagine sono tutte bloccate ci si ferma subito (prima si provavano
+# tutte le 565 aziende, ~7 minuti per nulla) e la mail lo dice chiaramente.
+WTTJ_PAGINE_PROVA_BLOCCO = 8
+_WTTJ_TITOLO_BLOCCO = re.compile(r"request could not be satisfied|access denied|attention required", re.I)
+WTTJ_BLOCCATO = False
+
+def _pagina_bloccata(titolo: str) -> bool:
+    return bool(_WTTJ_TITOLO_BLOCCO.search(titolo or ""))
+
 def _citta_da_url_wttj(url: str) -> str:
     """'.../jobs/business-developer-sdr_paris_PAYFI_kAM5w6l' -> 'Paris'."""
     ultimo = url.split("?")[0].rstrip("/").rsplit("/", 1)[-1]
@@ -786,10 +864,11 @@ def _citta_da_url_wttj(url: str) -> str:
         return "-".join(p.capitalize() for p in parti[1].split("-"))
     return ""
 
-async def _wttj_async(slugs: list) -> tuple[list, int]:
+async def _wttj_async(slugs: list) -> tuple[list, int, bool]:
     risultati = []
     stato = {"fallimenti_consecutivi": 0, "stop": False, "saltate": 0,
-             "pagine_ok": 0, "card_totali": 0, "esempi_vuoti": []}
+             "pagine_ok": 0, "card_totali": 0, "esempi_vuoti": [],
+             "bloccate": 0, "provate": 0, "bloccato": False}
     coda: asyncio.Queue = asyncio.Queue()
     for s in slugs:
         coda.put_nowait(s)
@@ -816,6 +895,17 @@ async def _wttj_async(slugs: list) -> tuple[list, int]:
                 for n in range(1, WTTJ_MAX_PAGINE_AZIENDA + 1):
                     url = f"{WTTJ_BASE_URL}/en/companies/{slug}/jobs" + (f"?page={n}" if n > 1 else "")
                     link = await leggi_pagina(page, url)
+                    if n == 1:
+                        stato["provate"] += 1
+                        if not link and _pagina_bloccata(await page.title()):
+                            stato["bloccate"] += 1
+                        if (not stato["bloccato"] and stato["provate"] >= WTTJ_PAGINE_PROVA_BLOCCO
+                                and stato["bloccate"] == stato["provate"]):
+                            stato["bloccato"] = stato["stop"] = True
+                            print(f"    ⛔ Le prime {stato['provate']} aziende rispondono con la pagina "
+                                  f"di blocco del sito: WTTJ rifiuta le richieste da qui. Mi fermo.")
+                    if not link and _pagina_bloccata(await page.title()):
+                        break
                     if not banner_gestito:
                         # Il banner cookie compare solo alla prima visita di ogni pagina.
                         for testo in ("OK for me", "No, thanks"):
@@ -868,10 +958,10 @@ async def _wttj_async(slugs: list) -> tuple[list, int]:
     # da "annunci trovati ma scartati dai filtri".
     print(f"   [diagnostica] {stato['pagine_ok']} aziende caricate, {stato['card_totali']} annunci "
           f"letti prima dei filtri")
-    if stato["pagine_ok"] and not stato["card_totali"]:
+    if stato["pagine_ok"] and not stato["card_totali"] and not stato["bloccato"]:
         print(f"   ⚠️  Nessun annuncio letto da nessuna pagina: probabile cambio di struttura "
               f"del sito o pagina non caricata del tutto. Esempi: {stato['esempi_vuoti']}")
-    return risultati, stato["saltate"]
+    return risultati, stato["saltate"], stato["bloccato"]
 
 def scrape_wttj():
     """Scraping WTTJ per singola azienda (pagina /jobs dell'azienda), usando
@@ -888,11 +978,15 @@ def scrape_wttj():
         print("   → nessuno slug WTTJ disponibile (serve prima far girare l'auto-discovery)")
         return []
 
+    global WTTJ_BLOCCATO
     inizio = time.time()
     try:
-        risultati, saltate = asyncio.run(_wttj_async(WTTJ_SLUGS))
+        risultati, saltate, WTTJ_BLOCCATO = asyncio.run(_wttj_async(WTTJ_SLUGS))
     except Exception as e:
         print(f"   ⚠️  Errore generale WTTJ: {e}")
+        return []
+    if WTTJ_BLOCCATO:
+        print("   → fonte sospesa per oggi: il sito blocca le richieste dai server di GitHub")
         return []
     if saltate:
         print(f"   [nota] {saltate} aziende non controllate in questo run "
@@ -1429,6 +1523,7 @@ def main():
         ("Lever", scrape_lever),
         ("Ashby", scrape_ashby),
         ("SmartRecruiters", scrape_smartrecruiters),
+        ("Teamtailor", scrape_teamtailor),
         ("Welcome to the Jungle", scrape_wttj),
         ("Portfolio VC", scrape_portfolio_vc),
     ]
@@ -1442,7 +1537,13 @@ def main():
             offerte = fn()
             tutte_trovate[nome] = offerte
             media = media_storica_per_fonte(storico, nome)
-            avviso = health_check(nome, len(offerte), media)
+            if nome == "Welcome to the Jungle" and WTTJ_BLOCCATO:
+                avviso = (f"{nome}: il sito blocca le richieste che arrivano dai server di GitHub "
+                          f"(pagina di errore CloudFront), quindi oggi la fonte è sospesa. Non è un "
+                          f"errore dello scraper: riprova da sola ogni giorno.")
+                print(f"⚠️  {avviso}")
+            else:
+                avviso = health_check(nome, len(offerte), media)
             if avviso:
                 avvisi.append(avviso)
             if offerte:

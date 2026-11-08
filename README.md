@@ -1,7 +1,7 @@
 # Paris Job Newsletter
 
 Scraper per annunci di lavoro a Parigi in inglese (senza francese richiesto),
-da fonti pubbliche: Greenhouse, Lever, Ashby, SmartRecruiters, Welcome to the Jungle
+da fonti pubbliche: Greenhouse, Lever, Ashby, SmartRecruiters, Teamtailor, Welcome to the Jungle
 e i job board pubblici dei fondi VC (portafogli di Accel, Balderton, Alven, XAnge, Sequoia…).
 
 ## Setup

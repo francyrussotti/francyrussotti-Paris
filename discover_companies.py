@@ -215,6 +215,7 @@ _ATS_DA_URL = {
     "lever": r"jobs\.lever\.co/([\w.-]+)",
     "ashby": r"jobs\.ashbyhq\.com/([\w.%-]+)",
     "smartrecruiters": r"(?:jobs|careers)\.smartrecruiters\.com/([\w.-]+)",
+    "teamtailor": r"([\w-]+)\.teamtailor\.com",
 }
 
 def slug_da_board_vc() -> dict:
@@ -297,8 +298,14 @@ def genera_varianti_slug(nome: str) -> list[str]:
     senza_spazi = re.sub(r"\s+", "", base)
     con_trattini = re.sub(r"\s+", "-", base)
     varianti = {senza_spazi, con_trattini}
+    # Gli slug WTTJ hanno spesso un numero finale ('aqemia-1' → nome 'aqemia 1'):
+    # il portale di candidatura usa il nome senza numero.
+    senza_numero = re.sub(r"\s+\d+$", "", base)
+    if senza_numero != base:
+        varianti |= {re.sub(r"\s+", "", senza_numero), re.sub(r"\s+", "-", senza_numero)}
+        base = senza_numero
     # varianti senza suffissi comuni tipo 'ai', 'inc', 'sas'
-    for suffisso in [" ai", " inc", " sas", " sa", " labs"]:
+    for suffisso in [" ai", " inc", " sas", " sa", " labs", " group", " france", " io", " com"]:
         if base.endswith(suffisso):
             ridotto = base[: -len(suffisso)].strip()
             varianti.add(re.sub(r"\s+", "", ridotto))
@@ -339,6 +346,14 @@ def verifica_ashby(slug: str) -> bool:
     except Exception:
         return False
 
+def verifica_teamtailor(slug: str) -> bool:
+    """Feed pubblico degli annunci (RSS) del career site Teamtailor."""
+    try:
+        r = requests.get(f"https://{slug}.teamtailor.com/jobs.rss", headers=HEADERS, timeout=8)
+        return r.status_code == 200 and "<rss" in r.text[:300] and "<item>" in r.text
+    except Exception:
+        return False
+
 def verifica_smartrecruiters(company_id: str) -> bool:
     try:
         r = requests.get(
@@ -354,6 +369,10 @@ def verifica_smartrecruiters(company_id: str) -> bool:
 # ------------------------------------------------------------
 
 CACHE_FILE = "discovery_cache.json"
+# Versione della verifica: le voci di una versione precedente senza nessun
+# portale trovato si riverificano subito (31/10/2026: aggiunto Teamtailor e
+# riconosciuti i nomi con numero finale, es. 'payplug 1' → 'payplug').
+VERSIONE_VERIFICA = 2
 GIORNI_RICONTROLLO = 30  # dopo quanto tempo riverificare un nome già scartato
 MAX_WORKER_PARALLELI = 8
 
@@ -379,11 +398,14 @@ def salva_cache(cache: dict):
     except Exception as e:
         print(f"⚠️  Errore scrittura {CACHE_FILE}: {e}")
 
-def _verifica_nome_su_tutte_le_fonti(nome: str, verifiche: dict) -> tuple[str, dict]:
-    """Verifica un singolo nome su tutte e 4 le piattaforme. Girato in
-    thread paralleli per accelerare (ogni chiamata è I/O di rete)."""
-    risultato = {}
+def _verifica_nome_su_tutte_le_fonti(nome: str, verifiche: dict, gia: dict | None = None) -> tuple[str, dict]:
+    """Verifica un singolo nome sulle piattaforme (quelle già trovate in `gia`
+    si tengono senza riverificarle). Girato in thread paralleli per
+    accelerare (ogni chiamata è I/O di rete)."""
+    risultato = {f: s for f, s in (gia or {}).items() if s}
     for fonte, funzione_verifica in verifiche.items():
+        if fonte in risultato:
+            continue
         trovato = None
         for slug in genera_varianti_slug(nome):
             if funzione_verifica(slug):
@@ -399,6 +421,7 @@ def scopri_slug_validi(nomi_aziende: list[str]) -> dict:
         "lever": verifica_lever,
         "ashby": verifica_ashby,
         "smartrecruiters": verifica_smartrecruiters,
+        "teamtailor": verifica_teamtailor,
     }
 
     cache = carica_cache()
@@ -407,6 +430,11 @@ def scopri_slug_validi(nomi_aziende: list[str]) -> dict:
 
     for nome in nomi_aziende:
         voce = cache.get(nome)
+        if voce and voce.get("v") != VERSIONE_VERIFICA:
+            # Verifica vecchia: si riverifica (solo le piattaforme mancanti se
+            # ne aveva già trovata una)
+            da_verificare.append(nome)
+            continue
         if voce:
             ultimo_controllo = datetime.fromisoformat(voce["ultimo_controllo"])
             gia_trovato_da_qualche_parte = any(voce["fonti"].values())
@@ -422,10 +450,13 @@ def scopri_slug_validi(nomi_aziende: list[str]) -> dict:
 
     if da_verificare:
         with ThreadPoolExecutor(max_workers=MAX_WORKER_PARALLELI) as executor:
-            futures = [executor.submit(_verifica_nome_su_tutte_le_fonti, nome, verifiche) for nome in da_verificare]
+            futures = [executor.submit(_verifica_nome_su_tutte_le_fonti, nome, verifiche,
+                                       (cache.get(nome) or {}).get("fonti"))
+                       for nome in da_verificare]
             for future in as_completed(futures):
                 nome, risultato = future.result()
-                cache[nome] = {"ultimo_controllo": oggi.isoformat(), "fonti": risultato}
+                cache[nome] = {"ultimo_controllo": oggi.isoformat(), "fonti": risultato,
+                               "v": VERSIONE_VERIFICA}
                 for fonte, slug in risultato.items():
                     if slug:
                         print(f"✅ {fonte.capitalize()} trovato: {nome} -> {slug}")
@@ -440,7 +471,7 @@ def scopri_slug_validi(nomi_aziende: list[str]) -> dict:
     # Il risultato finale è l'accumulo di TUTTO ciò che la cache ha mai trovato,
     # non solo i nomi di questa run: così un'azienda trovata mesi fa resta
     # nell'elenco anche se questa settimana le fonti dinamiche non la ripescano.
-    trovati = {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": []}
+    trovati = {"greenhouse": [], "lever": [], "ashby": [], "smartrecruiters": [], "teamtailor": []}
     for voce in cache.values():
         for fonte, slug in voce["fonti"].items():
             if slug and fonte in trovati:
@@ -452,9 +483,18 @@ def scopri_slug_validi(nomi_aziende: list[str]) -> dict:
 def main():
     print("🔎 Raccolgo nomi aziende da fonti pubbliche...")
     nomi = raccogli_nomi_aziende()
+    # Le aziende già trovate su WTTJ si cercano sempre anche sugli altri
+    # portali: da fine ottobre 2026 WTTJ blocca le richieste dai server di
+    # GitHub e la sua pagina "companies" non restituisce più nomi.
+    try:
+        with open("discovered_slugs.json", "r", encoding="utf-8") as f:
+            nomi += [s.replace("-", " ") for s in json.load(f).get("wttj", [])]
+    except Exception:
+        pass
+    nomi = list(dict.fromkeys(nomi))
     print(f"   → {len(nomi)} nomi raccolti\n")
 
-    print("🔎 Verifico quali hanno board Greenhouse/Lever/Ashby/SmartRecruiters attivo...")
+    print("🔎 Verifico quali hanno board Greenhouse/Lever/Ashby/SmartRecruiters/Teamtailor attivo...")
     slug_validi = scopri_slug_validi(nomi)
 
     # Slug WTTJ grezzi: non serve verifica extra, sono già confermati esistere
@@ -474,6 +514,7 @@ def main():
     print(f"\n📊 Risultato: {totale} aziende trovate "
           f"({len(slug_validi['greenhouse'])} Greenhouse, {len(slug_validi['lever'])} Lever, "
           f"{len(slug_validi['ashby'])} Ashby, {len(slug_validi['smartrecruiters'])} SmartRecruiters, "
+          f"{len(slug_validi['teamtailor'])} Teamtailor, "
           f"{len(slug_validi['wttj'])} WTTJ) → salvati in discovered_slugs.json")
     print("   paris_job_newsletter.py li legge automaticamente, nessuna azione richiesta.")
 
