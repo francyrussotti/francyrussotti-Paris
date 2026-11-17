@@ -1,4 +1,8 @@
 {
+  "ashby:browserbase": {
+    "errori": 1,
+    "dal": "2026-11-17"
+  },
   "ashby:tilt": {
     "errori": 7,
     "dal": "2026-10-31"
@@ -6,6 +10,10 @@
   "greenhouse:aiven36": {
     "errori": 7,
     "dal": "2026-10-30"
+  },
+  "greenhouse:aninebing": {
+    "errori": 1,
+    "dal": "2026-11-17"
   },
   "greenhouse:doctolib": {
     "errori": 7,
