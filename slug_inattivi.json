@@ -1,6 +1,6 @@
 {
   "ashby:browserbase": {
-    "errori": 1,
+    "errori": 2,
     "dal": "2026-11-17"
   },
   "ashby:tilt": {
@@ -12,7 +12,7 @@
     "dal": "2026-10-30"
   },
   "greenhouse:aninebing": {
-    "errori": 1,
+    "errori": 2,
     "dal": "2026-11-17"
   },
   "greenhouse:doctolib": {
