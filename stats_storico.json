@@ -1,15 +1,5 @@
 [
   {
-    "data": "2026-08-31",
-    "fonti": {
-      "Greenhouse": 77,
-      "Lever": 10,
-      "Ashby": 183,
-      "SmartRecruiters": 1,
-      "Welcome to the Jungle": 50
-    }
-  },
-  {
     "data": "2026-09-01",
     "fonti": {
       "Greenhouse": 77,
@@ -930,6 +920,17 @@
       "SmartRecruiters": 2,
       "Welcome to the Jungle": 0,
       "Portfolio VC": 213
+    }
+  },
+  {
+    "data": "2026-11-27",
+    "fonti": {
+      "Greenhouse": 84,
+      "Lever": 85,
+      "Ashby": 305,
+      "SmartRecruiters": 2,
+      "Welcome to the Jungle": 0,
+      "Portfolio VC": 219
     }
   }
 ]
